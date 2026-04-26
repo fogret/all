@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from threading import Thread
 import os
 import time
@@ -6,254 +7,264 @@ import glob
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ==================== 固定分类列表 ====================
-CATEGORIES = [
-    "央视频道",
-    "卫视频道",
-    "数字频道",
-    "电影频道",
-    "付费频道",
-    "IPTV频道",
-    "华数频道",
-    "BesTV&iHOT频道",
-    "河南频道",
-    "上海频道",
-    "青海频道",
-    "北京频道",
-    "河北频道",
-    "湖南频道",
-    "福建频道",
-    "陕西频道",
-    "海南频道",
-    "重庆频道",
-    "内蒙古频道",
-    "云南频道",
-    "江苏频道",
-    "山东频道",
-    "浙江频道",
-    "山西频道",
-    "安徽频道",
-    "湖北频道",
-    "贵州频道",
-    "广西频道",
-    "甘肃频道",
-    "新疆频道",
-    "江西频道",
-    "吉林频道",
-    "四川频道",
-    "广东频道",
-    "宁夏频道",
-    "天津频道",
-    "黑龙江频道",
-    "辽宁频道"
-]
+# ==================== 配置 ====================
+CONCURRENCY = 300
+ALIAS_FILE = "alias.txt"
+DEMO_FILE = "demo.txt"
 
+# ==================== 读取别名映射（标准名在前，别名在后） ====================
+def load_alias_map():
+    alias_map = {}
+    if os.path.exists(ALIAS_FILE):
+        with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or ',' not in line:
+                    continue
+                parts = [p.strip() for p in line.split(',') if p.strip()]
+                if len(parts) < 1:
+                    continue
+                standard = parts[0]
+                for alias in parts[1:]:
+                    alias_map[alias] = standard
+    return alias_map
+
+# ==================== 统一频道名 ====================
+def normalize_channel(name, alias_map):
+    return alias_map.get(name, name)
+
+# ==================== 读取 demo.txt 分类+频道列表 ====================
+def load_demo_channels(alias_map):
+    categories = []
+    current_cat = None
+    if not os.path.exists(DEMO_FILE):
+        print(f"⚠️ 未找到 {DEMO_FILE}")
+        return categories
+
+    with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if ',#genre#' in line:
+                cat_name = line.split(',')[0].strip()
+                current_cat = {
+                    "name": cat_name,
+                    "channels": []
+                }
+                categories.append(current_cat)
+            else:
+                if current_cat is not None:
+                    ch = normalize_channel(line, alias_map)
+                    current_cat["channels"].append(ch)
+    return categories
+
+# ==================== 读取扫描配置 ====================
 def read_config(config_file):
-    print(f"[读取配置] {config_file}")
+    print(f"读取设置文件：{config_file}")
     ip_configs = []
     try:
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_file, 'r') as f:
             for line_num, line in enumerate(f, 1):
-                line = line.strip()
                 if "," in line and not line.startswith("#"):
-                    parts = line.split(',')
+                    parts = line.strip().split(',')
                     ip_part, port = parts[0].strip().split(':')
                     a, b, c, d = ip_part.split('.')
                     option = int(parts[1])
                     url_end = "/status" if option >= 10 else "/stat"
                     ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
-                    print(f"[配置行{line_num}] http://{ip}:{port}{url_end}")
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
         return ip_configs
     except Exception as e:
-        print(f"[读取错误] {e}")
+        print(f"读取文件错误: {e}")
         return []
 
+# ==================== 生成IP段 ====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
-    if option in (2, 12):
-        cs = c.split('-')
-        c_start = int(cs[0])
-        c_end = int(cs[1]) + 1 if len(cs) == 2 else int(c) + 8
-        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_start, c_end) for y in range(1, 256)]
-    elif option in (0, 10):
+    if option == 2 or option == 12:
+        if '-' in c:
+            c_start, c_end = map(int, c.split('-'))
+        else:
+            c_start = int(c)
+            c_end = c_start + 7
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_start, c_end + 1) for y in range(1, 256)]
+    elif option == 0 or option == 10:
         return [f"{a}.{b}.{c}.{y}:{port}" for y in range(1, 256)]
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
+# ==================== 检测 udpxy ====================
 def check_ip_port(ip_port, url_end):
+    start = time.time()
     try:
         url = f"http://{ip_port}{url_end}"
-        start = time.time()
-        resp = requests.get(url, timeout=2)
+        resp = requests.get(url, timeout=2.5)
         resp.raise_for_status()
-        cost = round((time.time() - start) * 1000)
-        text = resp.text
-        if "Multi stream daemon" in text or "udpxy status" in text:
-            print(f"[有效] {url} 耗时 {cost}ms")
-            return ip_port, cost
+        t = int((time.time() - start) * 1000)
+        if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
+            print(f"✅ 有效 {url}  {t}ms")
+            return ip_port
         else:
-            print(f"[无效] {url} 非udpxy")
-            return None
+            print(f"❌ 无效 {url}  {t}ms")
     except Exception as e:
-        print(f"[超时/失败] http://{ip_port}{url_end}")
-        return None
+        t = int((time.time() - start) * 1000)
+        print(f"⏱️ 超时 {ip_port}  {t}ms")
+    return None
 
+# ==================== 多线程扫描 ====================
 def scan_ip_port(ip, port, option, url_end):
-    valid = []
+    valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
     total = len(ip_ports)
     checked = [0]
-    print(f"[扫描开始] 总计 {total} 个地址")
 
     def progress():
         while checked[0] < total:
-            print(f"[进度] 已扫 {checked[0]}/{total} | 有效 {len(valid)}")
+            p = int(checked[0] / total * 100)
+            print(f"[测速] 进度 {p}% | 已扫 {checked[0]}/{total} | 有效 {len(valid_ip_ports)}")
             time.sleep(10)
+
     Thread(target=progress, daemon=True).start()
 
-    workers = 300 if option % 2 == 1 else 100
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futs = {executor.submit(check_ip_port, p, url_end): p for p in ip_ports}
-        for f in as_completed(futs):
-            res = f.result()
+    max_workers = 300 if option % 2 == 1 else 100
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(check_ip_port, ipp, url_end): ipp for ipp in ip_ports}
+        for fut in as_completed(futures):
+            res = fut.result()
             if res:
-                valid.append(res)
+                valid_ip_ports.append(res)
             checked[0] += 1
 
-    valid.sort(key=lambda x: x[1])
-    print(f"[扫描完成] 有效地址：{len(valid)}")
-    return [p for p, t in valid]
+    return sorted(set(valid_ip_ports))
 
-def load_demo_channels():
-    demo = "demo.txt"
-    if not os.path.exists(demo):
-        print(f"[警告] 未找到 {demo}")
-        return {}
-    cat_map = {}
-    current = None
-    with open(demo, 'r', encoding='utf-8') as f:
-        for line in f:
+# ==================== 省份扫描 & 生成组播 ====================
+def multicast_province(config_file):
+    filename = os.path.basename(config_file)
+    province = filename.split('_')[0]
+    print(f"\n{'='*30}\n         开始扫描：{province}\n{'='*30}")
+    configs = sorted(set(read_config(config_file)))
+    print(f"读取完成，共 {len(configs)} 组")
+
+    all_ips = []
+    for ip, port, opt, end in configs:
+        print(f"\n扫描目标：http://{ip}:{port}{end}")
+        all_ips.extend(scan_ip_port(ip, port, opt, end))
+
+    if not all_ips:
+        print(f"\n❌ {province} 未扫描到有效udpxy")
+        return
+
+    all_ips = sorted(set(all_ips))
+    print(f"\n✅ {province} 扫描完成，有效IP：{len(all_ips)}")
+
+    os.makedirs("ip", exist_ok=True)
+    with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
+        f.write('\n'.join(all_ips))
+
+    # 存档
+    archive = f"ip/存档_{province}_ip.txt"
+    if os.path.exists(archive):
+        with open(archive, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    else:
+        lines = []
+
+    for ipp in all_ips:
+        ip_part, p = ipp.split(':')
+        a, b, c, d = ip_part.split('.')
+        lines.append(f"{a}.{b}.{c}.1:{p}\n")
+
+    with open(archive, 'w', encoding='utf-8') as f:
+        f.writelines(sorted(set(lines)))
+
+    # 模板生成组播列表
+    tpl = os.path.join('template', f"template_{province}.txt")
+    if os.path.exists(tpl):
+        with open(tpl, 'r', encoding='utf-8') as f:
+            tpl_content = f.read()
+        output = []
+        with open(f"ip/{province}_ip.txt", 'r', encoding='utf-8') as f:
+            for idx, line in enumerate(f, 1):
+                proxy = line.strip()
+                output.append(f"{province}-组播{idx},#genre#\n")
+                output.append(tpl_content.replace("ipipip", proxy))
+        with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
+            f.writelines(output)
+    else:
+        print(f"⚠️ 无模板：{tpl}")
+
+# ==================== txt 转 m3u ====================
+def txt_to_m3u(in_txt, out_m3u):
+    with open(in_txt, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    with open(out_m3u, 'w', encoding='utf-8') as f:
+        f.write("#EXTM3U\n")
+        current_group = ""
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
             if ",#genre#" in line:
-                current = line.split(',')[0]
-                cat_map[current] = []
-            elif current:
-                cat_map[current].append(line)
-    return cat_map
+                current_group = line.split(',')[0].strip()
+            else:
+                if ',' in line:
+                    ch_name, ch_url = line.split(',', 1)
+                    f.write(f'#EXTINF:-1 group-title="{current_group}",{ch_name}\n')
+                    f.write(f"{ch_url}\n")
 
-def multicast_province(config_file):
-    fname = os.path.basename(config_file)
-    province = fname.split('_')[0]
-    print(f"\n{'='*30}\n[省份扫描] {province}\n{'='*30}")
-    configs = list(set(read_config(config_file)))
-    all_ips = []
-    for ip, port, opt, end in configs:
-        print(f"\n[扫描] {ip}:{port}{end}")
-        all_ips += scan_ip_port(ip, port, opt, end)
-    all_ips = sorted(set(all_ips))
-    if not all_ips:
-        print(f"[{province}] 无有效IP")
-        return
-    os.makedirs("ip", exist_ok=True)
-    ip_out = f"ip/{province}_ip.txt"
-    with open(ip_out, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(all_ips))
-    print(f"[{province}] 已保存 {len(all_ips)} 个IP到 {ip_out}")
-
-    archive = f"ip/存档_{province}_ip.txt"
-    if os.path.exists(archive):
-        with open(archive, encoding='utf-8') as f:
-            lines = f.read().splitlines()
-        for ip_port in all_ips:
-            ip, p = ip_port.split(':')
-            a, b, c, d = ip.split('.')
-            lines.append(f"{a}.{b}.{c}.1:{p}")
-        with open(archive, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(sorted(set(lines))))
-
-    tpl = f"template/template_{province}.txt"
-    if os.path.exists(tpl):
-        with open(tpl, encoding='utf-8') as f:
-            tpl_content = f.read()
-        output = []
-        with open(ip_out, encoding='utf-8') as f:
-            for idx, line in enumerate(f, 1):
-                ip = line.strip()
-                output.append(f"{province}-组播{idx},#genre#\n")
-                output.append(tpl_content.replace("ipipip", ip))
-        with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
-            f.writelines(output)
-    else:
-        print(f"[模板缺失] {tpl}")
-
-def txt_to_m3u(in_txt, out_m3u):
-    with open(in_txt, encoding='utf-8') as f:
-        lines = f.read().splitlines()
-    with open(out_m3u, 'w', encoding='utf-8') as f:
-        f.write("#EXTM3U\n")
-        group = ""
-        for line in lines:
-            line = line.strip()
-            if ",#genre#" in line:
-                group = line.split(',')[0]
-            elif "," in line:
-                name, url = line.split(',', 1)
-                f.write(f'#EXTINF:-1 group-title="{group}",{name}\n{url}\n')
-
+# ==================== 主函数 ====================
 def main():
-    os.makedirs("ip", exist_ok=True)
-    os.makedirs("template", exist_ok=True)
+    alias_map = load_alias_map()
+    categories = load_demo_channels(alias_map)
 
-    # 扫描各省配置
-    for cfg in glob.glob("ip/*_config.txt"):
+    # 扫描所有省份
+    for cfg in glob.glob(os.path.join('ip', '*_config.txt')):
         multicast_province(cfg)
 
-    # 加载频道名
-    cat_channels = load_demo_channels()
-    # 收集所有组播地址
-    multicast_files = glob.glob("组播_*.txt")
-    all_urls = []
-    for mf in multicast_files:
-        with open(mf, encoding='utf-8') as f:
+    # 收集所有有效代理
+    proxies = []
+    for fn in glob.glob("ip/*_ip.txt"):
+        if "存档" in fn:
+            continue
+        with open(fn, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if "," in line and not line.endswith("#genre#"):
-                    parts = line.split(',', 1)
-                    if len(parts) == 2:
-                        all_urls.append(parts[1])
+                if line:
+                    proxies.append(line)
 
-    # 去重并按速度排序（这里按顺序复用，保留测速顺序）
-    valid_urls = sorted(set(all_urls))
-    print(f"\n[汇总] 有效播放地址 {len(valid_urls)} 个")
+    if not proxies:
+        print("⚠️ 无可用代理，无法生成频道")
+        return
 
-    # 生成最终文件
-    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)
-    update_time = now.strftime("%Y/%m/%d %H:%M")
-    output_lines = [f"{update_time}更新,#genre#"]
+    # 北京时间
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_cn = now_utc + datetime.timedelta(hours=8)
+    update_time = now_cn.strftime("%Y/%m/%d %H:%M")
 
-    # 写入固定分类
-    url_idx = 0
-    for cat in CATEGORIES:
-        output_lines.append(f"{cat},#genre#")
-        channels = cat_channels.get(cat, [])
+    # 生成最终列表
+    output = [f"{update_time}更新,#genre#"]
+    idx_proxy = 0
+
+    for cat in categories:
+        cat_name = cat["name"]
+        channels = cat["channels"]
+        output.append(f"{cat_name},#genre#")
         for ch in channels:
-            if url_idx < len(valid_urls):
-                output_lines.append(f"{ch},{valid_urls[url_idx]}")
-                url_idx += 1
-            else:
-                output_lines.append(f"{ch},")
+            if idx_proxy >= len(proxies):
+                idx_proxy = 0
+            proxy = proxies[idx_proxy]
+            # 拼接组播地址（按你模板格式）
+            addr = f"http://{proxy}/rtp/239.16.20.1:10010"
+            output.append(f"{ch},{addr}")
+            idx_proxy += 1
 
-    # 写入 zubo_all.txt
-    with open("zubo_all.txt", "w", encoding="utf-8") as f:
-        f.write('\n'.join(output_lines))
-    # 转m3u
+    with open("zubo_all.txt", 'w', encoding='utf-8') as f:
+        f.write('\n'.join(output))
+
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-
-    print("\n[完成] 分类已正确生成，带北京时间更新时间")
-    print(f"生成文件：zubo_all.txt / zubo_all.m3u")
+    print(f"\n🎉 全部完成：zubo_all.txt / zubo_all.m3u 已生成")
 
 if __name__ == "__main__":
     main()
