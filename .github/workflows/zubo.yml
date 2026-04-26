@@ -1,8 +1,9 @@
 name: zubo
 
 on:
-  schedule:
-    - cron: '0 21,4 * * *'
+  # 暂时注释，今天先不执行定时任务
+  # schedule:
+  #   - cron: '0 9 * * *'
   workflow_dispatch:
 
 jobs:
