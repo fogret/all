@@ -1,7 +1,7 @@
 name: zubo
 
 on:
-  # 暂时注释，今天先不执行定时任务
+  # 定时暂时关闭，今天不执行
   # schedule:
   #   - cron: '0 9 * * *'
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install requests aiohttp
 
       - name: 获取组播源
         run: |
