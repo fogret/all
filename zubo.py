@@ -10,7 +10,7 @@ import aiohttp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================== 配置 ====================
-CONCURRENCY = 200
+CONCURRENCY = 60
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 
