@@ -6,7 +6,6 @@ CCTV-4
 CCTV-4-北美
 CCTV-4-美洲
 CCTV-4-欧洲
-CCTV-4K
 CCTV-5
 CCTV-5+
 CCTV-6
@@ -20,7 +19,6 @@ CCTV-13
 CCTV-14
 CCTV-15
 CCTV-16
-CCTV-16-4K
 CCTV-17
 CCTV-世界地理
 CCTV-兵器科技
@@ -41,7 +39,6 @@ CCTV-卫生健康
 安多卫视
 兵团卫视
 北京卫视
-北京卫视-4K
 重庆卫视
 东南卫视
 东方卫视
@@ -89,17 +86,15 @@ CCTV-卫生健康
 海峡卫视
 
 数字频道,#genre#
-CETV-1
-CETV-2
-CETV-4
-CETV-早期教育
-CGTN
 CGTN-阿语
 CGTN-俄语
 CGTN-法语
 CGTN-纪录
 CGTN-英语
 CGTN-西语
+CETV-1
+CETV-2
+CETV-4
 哈哈炫动
 嘉佳卡通
 卡酷少儿
@@ -110,48 +105,32 @@ CGTN-西语
 金鹰纪实
 
 电影频道,#genre#
-BesTV华语
-CHC-高清
 CHC-家庭
 CHC-动作
 CHC-影迷
-北京IPTV电影
-百事通4K
 峨眉电影
 湖南电影
-华数4K
-华数4K电影
 华数电影
 华数怀旧
 华数经典
 华数爱电影
+BesTV华语
+北京IPTV电影
 IPTV电影
 劲爆电影
 西部电影
 
 付费频道,#genre#
-4K乐享
-爱上4K
 东方购物
-中录4K
-云南4K
-亲子4K
 内蒙古购物
-南国4K
 星空购物
 天津购物
 山东购物
-广东4K
-广东4K综艺
 南方购物
 欢笑4K
 河北购物
 河南购物
-百事通4K少儿
-百事通4K纪实
-绚影4K
 西安购物
-试播4K
 
 IPTV频道,#genre#
 IPTV1
@@ -195,7 +174,6 @@ IPTV鉴赏
 IPTV靓妆
 IPTV音乐
 IPTV时尚
-北京IPTV4K
 北京IPTV淘BABY
 北京IPTV剧场
 北京IPTV娱乐
@@ -218,7 +196,6 @@ IPTV时尚
 华数星影
 华数武侠
 华数热播
-华数4K
 华数电视剧
 华数谍战
 华数精选
