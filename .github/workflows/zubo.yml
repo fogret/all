@@ -2,7 +2,7 @@ name: zubo
  
 on:
   schedule:
-    - cron: '0 10 * * *'
+    - cron: '30 10 * * *'
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install requests aiohttp
 
       - name: Run
