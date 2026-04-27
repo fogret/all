@@ -9,6 +9,7 @@ import configparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
+from collections import defaultdict
 
 # ==================== 配置 ====================
 ALIAS_FILE = "alias.txt"
@@ -145,7 +146,7 @@ def multicast_province(config_file):
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.write('\n'.join(out))
 
-# ==================== 核心：生成带 tvg-logo、tvg-epg 的 m3u ====================
+# ==================== 生成 m3u ====================
 def txt_to_m3u_with_meta(txt_path, m3u_path, update_str, epg_url, logo_base):
     with open(txt_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -154,7 +155,11 @@ def txt_to_m3u_with_meta(txt_path, m3u_path, update_str, epg_url, logo_base):
         f.write("#EXTM3U\n")
         if epg_url:
             f.write(f"#EXTM3U url-tvg=\"{epg_url}\"\n")
-        f.write(f"# 更新时间：{update_str.replace(',#genre#','')}\n\n")
+
+        # 你要的更新时间格式
+        update_time_str = update_str.replace(",#genre#", "").strip()
+        f.write(f'#EXTINF:-1 group-title="{update_time_str}",更新时间\n')
+        f.write("http://127.0.0.1\n\n")
 
         current_group = ""
         for line in lines:
@@ -171,23 +176,45 @@ def txt_to_m3u_with_meta(txt_path, m3u_path, update_str, epg_url, logo_base):
                 f.write(ext + "\n")
                 f.write(url + "\n\n")
 
-# ==================== 异步测速 ====================
+# ==================== 异步测速（按频道内排序） ====================
 async def test_speed(session, name, url):
     try:
         t0 = time.time()
         async with session.get(url, timeout=8) as r:
             await r.read(2048)
-        return name, url, time.time()-t0
+        return name, url, time.time() - t0
     except:
         return name, url, 999
 
-async def async_speed_sort(channels):
+async def async_speed_sort_by_channel(channels):
+    channel_groups = defaultdict(list)
+    for name, url in channels:
+        channel_groups[name].append((name, url))
+
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [test_speed(session, n, u) for n,u in channels]
-        results = await asyncio.gather(*tasks)
-    results.sort(key=lambda x:x[2])
-    return [(n,u) for n,u,t in results]
+        sorted_groups = {}
+        total = len(channels)
+        valid_count = 0
+
+        for name, items in channel_groups.items():
+            print(f"测速中: {name} ({len(items)}条)")
+            tasks = [test_speed(session, n, u) for n, u in items]
+            results = await asyncio.gather(*tasks)
+            results.sort(key=lambda x: x[2])
+            sorted_groups[name] = [(n, u) for n, u, t in results]
+            valid_count += sum(1 for t in results if t[2] < 999)
+
+    seen = set()
+    sorted_all = []
+    for name, _ in channels:
+        if name not in seen:
+            seen.add(name)
+            sorted_all.extend(sorted_groups[name])
+
+    # 日志只打印，不写文件
+    print(f"\n测速完成 | 总线路:{total} | 有效:{valid_count} | 同频道最快置顶")
+    return sorted_all
 
 # ==================== 主函数 ====================
 def main():
@@ -215,10 +242,8 @@ def main():
                     n_std = alias_map.get(n.strip(), n.strip())
                     all_channels.append((n_std, u.strip()))
 
-    # 去重
-    unique = list(dict.fromkeys(all_channels))
-    print(f"\n测速总数：{len(unique)} 并发：{CONCURRENCY}")
-    unique = asyncio.run(async_speed_sort(unique))
+    print(f"\n测速总数：{len(all_channels)} 并发：{CONCURRENCY}")
+    unique = asyncio.run(async_speed_sort_by_channel(all_channels))
 
     # 按 demo 排序
     cat_map, cat_order = load_category_map()
@@ -251,7 +276,7 @@ def main():
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
 
-    # 写带台标、EPG的 m3u
+    # 写 m3u
     txt_to_m3u_with_meta(
         "zubo_all.txt",
         "zubo_all.m3u",
@@ -261,7 +286,7 @@ def main():
     )
 
     print("\n✅ 完成：zubo_all.txt + zubo_all.m3u")
-    print("✅ 已自动加入 tvg-logo & tvg-epg")
+    print("✅ 日志仅控制台显示，未写入任何播放文件")
 
 if __name__ == "__main__":
     main()
