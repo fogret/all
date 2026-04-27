@@ -5,24 +5,15 @@ import time
 import datetime
 import glob
 import requests
-import configparser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
-from collections import defaultdict
 
 # ==================== 配置 ====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
-CONCURRENCY = 60
+CONCURRENCY = 60    # 异步测速并发数，可直接改数字
 
-# ==================== 读取 config.ini ====================
-def load_config():
-    cfg = configparser.ConfigParser()
-    cfg.read("config.ini", encoding="utf-8")
-    epg_url = cfg.get("EPG", "epg_url", fallback="")
-    logo_base = cfg.get("LOGO", "logo_base_url", fallback="")
-    return epg_url, logo_base
 
 # ==================== 别名映射 ====================
 def load_alias_map():
@@ -41,10 +32,10 @@ def load_alias_map():
                     alias_map[alias] = standard
     return alias_map
 
-# ==================== 读取分类顺序 ====================
+
+# ==================== 读取分类结构 ====================
 def load_category_map():
     category_map = {}
-    cat_order = []
     current_cat = None
     if os.path.exists(DEMO_FILE):
         with open(DEMO_FILE, 'r', encoding='utf-8') as f:
@@ -55,13 +46,13 @@ def load_category_map():
                 if ',#genre#' in line:
                     current_cat = line.split(',')[0].strip()
                     category_map[current_cat] = []
-                    cat_order.append(current_cat)
                 else:
                     if current_cat:
                         category_map[current_cat].append(line.strip())
-    return category_map, cat_order
+    return category_map
 
-# ==================== 原有扫描逻辑不动 ====================
+
+# ==================== 原代码完全保留 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -71,10 +62,10 @@ def read_config(config_file):
                 if "," in line and not line.startswith("#"):
                     parts = line.strip().split(',')
                     ip_part, port = parts[0].strip().split(':')
-                    a,b,c,d = ip_part.split('.')
+                    a, b, c, d = ip_part.split('.')
                     option = int(parts[1])
-                    url_end = "/status" if option >=10 else "/stat"
-                    ip = f"{a}.{b}.{c}.1" if option%2 ==0 else f"{a}.{b}.1.1"
+                    url_end = "/status" if option >= 10 else "/stat"
+                    ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
                     print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
         return ip_configs
@@ -82,17 +73,19 @@ def read_config(config_file):
         print(f"读取文件错误: {e}")
         return []
 
+
 def generate_ip_ports(ip, port, option):
-    a,b,c,d = ip.split('.')
-    if option ==2 or option ==12:
+    a, b, c, d = ip.split('.')
+    if option == 2 or option == 12:
         c_parts = c.split('-')
         c_start = int(c_parts[0])
-        c_end = int(c_parts[-1])+1 if '-' in c else int(c)+8
-        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_start,c_end) for y in range(1,256)]
-    elif option ==0 or option ==10:
-        return [f"{a}.{b}.{c}.{y}:{port}" for y in range(1,256)]
+        c_end = int(c_parts[-1]) + 1 if '-' in c else int(c) + 8
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_start, c_end) for y in range(1, 256)]
+    elif option == 0 or option == 10:
+        return [f"{a}.{b}.{c}.{y}:{port}" for y in range(1, 256)]
     else:
-        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1,256)]
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
+
 
 def check_ip_port(ip_port, url_end):
     try:
@@ -103,23 +96,27 @@ def check_ip_port(ip_port, url_end):
     except:
         return None
 
+
 def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
     valid = []
     checked = [0]
+
     def progress():
-        while checked[0]<len(ip_ports):
+        while checked[0] < len(ip_ports):
             print(f"扫描进度：{checked[0]}/{len(ip_ports)}  有效：{len(valid)}")
             time.sleep(15)
     Thread(target=progress, daemon=True).start()
-    with ThreadPoolExecutor(300 if option%2 else 100) as pool:
+
+    with ThreadPoolExecutor(300 if option % 2 else 100) as pool:
         fs = {pool.submit(check_ip_port, ipp, url_end): ipp for ipp in ip_ports}
         for f in as_completed(fs):
             res = f.result()
             if res:
                 valid.append(res)
-            checked[0] +=1
+            checked[0] += 1
     return valid
+
 
 def multicast_province(config_file):
     fname = os.path.basename(config_file)
@@ -127,10 +124,11 @@ def multicast_province(config_file):
     print(f"\n========== {province} 扫描开始 ==========")
     cfgs = read_config(config_file)
     all_ip = []
-    for ip,port,opt,ue in cfgs:
-        all_ip += scan_ip_port(ip,port,opt,ue)
+    for ip, port, opt, ue in cfgs:
+        all_ip += scan_ip_port(ip, port, opt, ue)
     all_ip = sorted(set(all_ip))
     print(f"{province} 有效IP：{len(all_ip)}")
+
     os.makedirs("ip", exist_ok=True)
     if all_ip:
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
@@ -140,43 +138,32 @@ def multicast_province(config_file):
             with open(tmpl, 'r', encoding='utf-8') as f:
                 tmp = f.read()
             out = []
-            for idx, ip in enumerate(all_ip,1):
+            for idx, ip in enumerate(all_ip, 1):
                 out.append(f"{province}-组播{idx},#genre#")
                 out.append(tmp.replace("ipipip", ip))
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.write('\n'.join(out))
 
-# ==================== 生成 m3u ====================
-def txt_to_m3u_with_meta(txt_path, m3u_path, update_str, epg_url, logo_base):
-    with open(txt_path, 'r', encoding='utf-8') as f:
+
+def txt_to_m3u(txt, m3u):
+    with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-
-    with open(m3u_path, 'w', encoding='utf-8') as f:
+    with open(m3u, 'w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
-        if epg_url:
-            f.write(f"#EXTM3U url-tvg=\"{epg_url}\"\n")
-
-        # 你要的更新时间格式
-        update_time_str = update_str.replace(",#genre#", "").strip()
-        f.write(f'#EXTINF:-1 group-title="{update_time_str}",更新时间\n')
-        f.write("http://127.0.0.1\n\n")
-
-        current_group = ""
+        g = ""
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             if ",#genre#" in line:
-                current_group = line.split(',')[0].strip()
-                continue
-            if "," in line:
-                name, url = line.split(',', 1)
-                logo = f"{logo_base}{name}.png" if logo_base else ""
-                ext = f'#EXTINF:-1 tvg-name="{name}" tvg-logo="{logo}" group-title="{current_group}",{name}'
-                f.write(ext + "\n")
-                f.write(url + "\n\n")
+                g = line.split(',')[0]
+            else:
+                if ',' in line:
+                    n, u = line.split(',', 1)
+                    f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
 
-# ==================== 异步测速（按频道内排序） ====================
+
+# ==================== 异步测速 ====================
 async def test_speed(session, name, url):
     try:
         t0 = time.time()
@@ -186,48 +173,23 @@ async def test_speed(session, name, url):
     except:
         return name, url, 999
 
-async def async_speed_sort_by_channel(channels):
-    channel_groups = defaultdict(list)
-    for name, url in channels:
-        channel_groups[name].append((name, url))
 
+async def async_speed_sort(channels):
     connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        sorted_groups = {}
-        total = len(channels)
-        valid_count = 0
+    async with aiohttp.ClientSession(connector=connector) as s:
+        tasks = [test_speed(s, n, u) for n, u in channels]
+        results = await asyncio.gather(*tasks)
+    results.sort(key=lambda x: x[2])
+    return [(n, u) for n, u, t in results]
 
-        for name, items in channel_groups.items():
-            print(f"测速中: {name} ({len(items)}条)")
-            tasks = [test_speed(session, n, u) for n, u in items]
-            results = await asyncio.gather(*tasks)
-            results.sort(key=lambda x: x[2])
-            sorted_groups[name] = [(n, u) for n, u, t in results]
-            valid_count += sum(1 for t in results if t[2] < 999)
 
-    seen = set()
-    sorted_all = []
-    for name, _ in channels:
-        if name not in seen:
-            seen.add(name)
-            sorted_all.extend(sorted_groups[name])
-
-    # 日志只打印，不写文件
-    print(f"\n测速完成 | 总线路:{total} | 有效:{valid_count} | 同频道最快置顶")
-    return sorted_all
-
-# ==================== 主函数 ====================
-def main():
-    epg_url, logo_base = load_config()
-    print("===== 加载配置 =====")
-    print("EPG地址:", epg_url)
-    print("台标地址:", logo_base)
-
-    # 扫描
+# ==================== 主流程：完全按你的要求 ====================
+async def main():
+    # 1. 原样运行原有扫描逻辑
     for cfg in glob.glob("ip/*_config.txt"):
         multicast_province(cfg)
 
-    # 收集频道
+    # 2. 收集所有频道
     alias_map = load_alias_map()
     all_channels = []
     for f in glob.glob("组播_*.txt"):
@@ -237,56 +199,62 @@ def main():
                 line = line.strip()
                 if ",#genre#" in line:
                     g = line.split(',')[0]
-                elif "," in line:
-                    n,u = line.split(',',1)
+                elif ',' in line:
+                    n, u = line.split(',', 1)
                     n_std = alias_map.get(n.strip(), n.strip())
                     all_channels.append((n_std, u.strip()))
 
-    print(f"\n测速总数：{len(all_channels)} 并发：{CONCURRENCY}")
-    unique = asyncio.run(async_speed_sort_by_channel(all_channels))
+    # 3. 去重
+    unique = {}
+    for n, u in all_channels:
+        unique[(n, u)] = u
+    unique = list(unique.keys())
 
-    # 按 demo 排序
-    cat_map, cat_order = load_category_map()
-    cat_channels = {c:[] for c in cat_order}
-    used = set()
+    # 4. 异步测速排序（快的在前，全部保留）
+    print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
+    unique = await async_speed_sort(unique)
 
-    for cat in cat_order:
-        names = cat_map[cat]
-        for dn in names:
-            for ch in unique:
-                if ch[0] == dn and ch not in used:
-                    cat_channels[cat].append(ch)
-                    used.add(ch)
-    uncat = [ch for ch in unique if ch not in used]
+    # 5. 按 demo 分类
+    cat_map = load_category_map()
+    cat_to_channels = {k: [] for k in cat_map}
+    uncat = []
+    for n, u in unique:
+        placed = False
+        for cat, names in cat_map.items():
+            if n in names:
+                cat_to_channels[cat].append((n, u))
+                placed = True
+                break
+        if not placed:
+            uncat.append((n, u))
 
-    # 北京时间
-    tz = datetime.timezone(datetime.timedelta(hours=8))
-    now = datetime.datetime.now(tz)
-    update_str = now.strftime("%Y/%m/%d %H:%M") + " 更新,#genre#"
+    # 6. 写入最终文件 + 北京时间更新（按你要求修改）
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    update_str = now.strftime("%Y/%m/%d %H:%M")
+    
+    # 大类名：更新时间，频道名：北京更新时间
+    out_lines = [
+        "更新时间,#genre#",
+        f"北京更新时间,{update_str}"
+    ]
 
-    # 写 txt
-    out_lines = [update_str]
-    for cat in cat_order:
+    for cat, items in cat_to_channels.items():
         out_lines.append(f"{cat},#genre#")
-        out_lines += [f"{n},{u}" for n,u in cat_channels[cat]]
+        out_lines += [f"{n},{u}" for n, u in items]
+    
+    # 未匹配归到“未匹配频道”
     if uncat:
-        out_lines.append("其他频道,#genre#")
-        out_lines += [f"{n},{u}" for n,u in uncat]
+        out_lines.append("未匹配频道,#genre#")
+        out_lines += [f"{n},{u}" for n, u in uncat]
 
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
+    txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
 
-    # 写 m3u
-    txt_to_m3u_with_meta(
-        "zubo_all.txt",
-        "zubo_all.m3u",
-        update_str,
-        epg_url,
-        logo_base
-    )
+    print("\n========== 全部完成 ==========")
+    print("更新时间已写入")
+    print("统一名称 + 分类 + 测速排序完成")
 
-    print("\n✅ 完成：zubo_all.txt + zubo_all.m3u")
-    print("✅ 日志仅控制台显示，未写入任何播放文件")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
