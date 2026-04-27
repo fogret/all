@@ -33,9 +33,10 @@ def load_alias_map():
     return alias_map
 
 
-# ==================== 读取分类结构 ====================
+# ==================== 读取分类结构 & 频道顺序 ====================
 def load_category_map():
     category_map = {}
+    cat_order = []
     current_cat = None
     if os.path.exists(DEMO_FILE):
         with open(DEMO_FILE, 'r', encoding='utf-8') as f:
@@ -46,10 +47,11 @@ def load_category_map():
                 if ',#genre#' in line:
                     current_cat = line.split(',')[0].strip()
                     category_map[current_cat] = []
+                    cat_order.append(current_cat)
                 else:
                     if current_cat:
                         category_map[current_cat].append(line.strip())
-    return category_map
+    return category_map, cat_order
 
 
 # ==================== 原代码完全保留 ====================
@@ -145,11 +147,13 @@ def multicast_province(config_file):
                 f.write('\n'.join(out))
 
 
-def txt_to_m3u(txt, m3u):
+# ==================== 转m3u并写入更新时间 ====================
+def txt_to_m3u(txt, m3u, update_str):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     with open(m3u, 'w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
+        f.write(f"# 更新时间：{update_str.replace(',#genre#', '')}\n")
         g = ""
         for line in lines:
             line = line.strip()
@@ -183,9 +187,9 @@ async def async_speed_sort(channels):
     return [(n, u) for n, u, t in results]
 
 
-# ==================== 主流程：完全按你的要求 ====================
+# ==================== 主流程 ====================
 def main():
-    # 1. 原样运行原有扫描逻辑
+    # 1. 原有扫描逻辑
     for cfg in glob.glob("ip/*_config.txt"):
         multicast_province(cfg)
 
@@ -210,43 +214,51 @@ def main():
         unique[(n, u)] = u
     unique = list(unique.keys())
 
-    # 4. 异步测速排序（快的在前，全部保留）
+    # 4. 测速排序（保留全部，快的在前）
     print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     unique = asyncio.run(async_speed_sort(unique))
 
-    # 5. 按 demo 分类
-    cat_map = load_category_map()
-    cat_to_channels = {k: [] for k in cat_map}
+    # 5. 加载demo顺序
+    cat_map, cat_order = load_category_map()
+    cat_channels = {cat: [] for cat in cat_order}
     uncat = []
-    for n, u in unique:
-        placed = False
-        for cat, names in cat_map.items():
-            if n in names:
-                cat_to_channels[cat].append((n, u))
-                placed = True
-                break
-        if not placed:
-            uncat.append((n, u))
 
-    # 6. 写入最终文件 + 北京时间更新
-    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-    update_str = now.strftime("%Y/%m/%d %H:%M") + "更新,#genre#"
+    # 6. 严格按demo顺序排序频道
+    for cat in cat_order:
+        demo_names = cat_map[cat]
+        for dn in demo_names:
+            matches = [item for item in unique if item[0] == dn]
+            cat_channels[cat].extend(matches)
+
+    # 未分类频道
+    used = {item for items in cat_channels.values() for item in items}
+    uncat = [item for item in unique if item not in used]
+
+    # 7. 生成北京时间
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    now = datetime.datetime.now(tz)
+    update_str = now.strftime("%Y/%m/%d %H:%M") + " 更新,#genre#"
     out_lines = [update_str]
 
-    for cat, items in cat_to_channels.items():
+    # 8. 按demo分类顺序输出
+    for cat in cat_order:
         out_lines.append(f"{cat},#genre#")
-        out_lines += [f"{n},{u}" for n, u in items]
+        out_lines += [f"{n},{u}" for n, u in cat_channels[cat]]
     if uncat:
         out_lines.append("其他频道,#genre#")
         out_lines += [f"{n},{u}" for n, u in uncat]
 
+    # 9. 写入文件
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
-    txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
+    txt_to_m3u("zubo_all.txt", "zubo_all.m3u", update_str)
 
     print("\n========== 全部完成 ==========")
-    print("更新时间已写入")
-    print("统一名称 + 分类 + 测速排序完成")
+    print("✅ 分类顺序 = demo.txt 顺序")
+    print("✅ 频道顺序 = demo.txt 内顺序")
+    print("✅ zubo_all.txt 有更新时间")
+    print("✅ zubo_all.m3u 有更新时间")
+    print("✅ 测速排序保留全部，快的在前")
 
 
 if __name__ == "__main__":
