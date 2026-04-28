@@ -1,325 +1,274 @@
-import eventlet
-eventlet.monkey_patch()
-import time
-import datetime
+# -*- coding: utf-8 -*-
 from threading import Thread
 import os
-import re
-from queue import Queue
+import time
+import datetime
+import glob
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-# 读取文件并设置参数
+import aiohttp
+import asyncio
+from collections import defaultdict
+
+# ==================== 配置 ====================
+ALIAS_FILE = "alias.txt"
+DEMO_FILE = "demo.txt"
+CONCURRENCY = 60    # 异步测速并发数，可直接改数字
+
+
+# ==================== 别名映射 ====================
+def load_alias_map():
+    alias_map = {}
+    if os.path.exists(ALIAS_FILE):
+        with open(ALIAS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or ',' not in line:
+                    continue
+                parts = [p.strip() for p in line.split(',') if p.strip()]
+                if len(parts) < 2:
+                    continue
+                standard = parts[0]
+                for alias in parts[1:]:
+                    alias_map[alias] = standard
+    return alias_map
+
+
+# ==================== 读取分类结构 ====================
+def load_category_map():
+    category_map = {}
+    current_cat = None
+    if os.path.exists(DEMO_FILE):
+        with open(DEMO_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if ',#genre#' in line:
+                    current_cat = line.split(',')[0].strip()
+                    category_map[current_cat] = []
+                else:
+                    if current_cat:
+                        category_map[current_cat].append(line.strip())
+    return category_map
+
+
+# ==================== 原代码完全保留 ====================
 def read_config(config_file):
+    print(f"读取设置文件：{config_file}")
     ip_configs = []
     try:
         with open(config_file, 'r') as f:
-            for line in f:
-                if line and not line.startswith("#"):
-                    ip_part, port = line.strip().split(':')
+            for line_num, line in enumerate(f, 1):
+                if "," in line and not line.startswith("#"):
+                    parts = line.strip().split(',')
+                    ip_part, port = parts[0].strip().split(':')
                     a, b, c, d = ip_part.split('.')
-                    ip = f"{a}.{b}.{c}.1"
-                    ip_configs.append((ip, port))
+                    option = int(parts[1])
+                    url_end = "/status" if option >= 10 else "/stat"
+                    ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
+                    ip_configs.append((ip, port, option, url_end))
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
         return ip_configs
     except Exception as e:
         print(f"读取文件错误: {e}")
-# 发送get请求检测url是否可访问
+        return []
+
+
+def generate_ip_ports(ip, port, option):
+    a, b, c, d = ip.split('.')
+    if option == 2 or option == 12:
+        c_parts = c.split('-')
+        c_start = int(c_parts[0])
+        c_end = int(c_parts[-1]) + 1 if '-' in c else int(c) + 8
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_start, c_end) for y in range(1, 256)]
+    elif option == 0 or option == 10:
+        return [f"{a}.{b}.{c}.{y}:{port}" for y in range(1, 256)]
+    else:
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
+
+
 def check_ip_port(ip_port, url_end):
     try:
         url = f"http://{ip_port}{url_end}"
         resp = requests.get(url, timeout=2)
-        resp.raise_for_status()
-        if "tsfile" in resp.text or "hls" in resp.text:
-            print(f"{url} 访问成功")
-            return url
+        if "udpxy" in resp.text or "Multi stream" in resp.text:
+            return ip_port
     except:
         return None
-# 多线程检测url，获取有效ip_port
-def scan_ip_port(ip, port, url_end):
-    valid_urls = []
-    a, b, c, d = map(int, ip.split('.'))
-    ip_ports = [f"{a}.{b}.{c}.{x}:{port}" for x in range(1, 256)]
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                valid_urls.append(result)
-    return valid_urls    
-# 发送GET请求获取JSON文件, 解析JSON文件, 获取频道信息
-def extract_channels(url):
-    hotel_channels = []
-    try:
-        json_url = f"{url}"
-        urls = url.split('/', 3)
-        url_x = f"{urls[0]}//{urls[2]}"
-        if "iptv" in json_url:
-            response = requests.get(json_url, timeout=2)
-            json_data = response.json()
-            for item in json_data['data']:
-                if isinstance(item, dict):
-                    name = item.get('name')
-                    urlx = item.get('url')
-                    if "tsfile" in urlx:
-                        urld = f"{url_x}{urlx}"
-                        hotel_channels.append((name, urld))
-        elif "ZHGXTV" in json_url:
-            response = requests.get(json_url, timeout=2)
-            json_data = response.content.decode('utf-8')
-            data_lines = json_data.split('\n')
-            for line in data_lines:
-                if "," in line and "hls" in line:
-                    name, channel_url = line.strip().split(',')
-                    parts = channel_url.split('/', 3)
-                    if len(parts) >= 4:
-                        urld = f"{url_x}/{parts[3]}"
-                        hotel_channels.append((name, urld))
-        return hotel_channels
-    except Exception:
-        return []
-# 测速
-def speed_test(channels):
-    def show_progress():
-        while checked[0] < len(channels):
-            numberx = checked[0] / len(channels) * 100
-            print(f"已测试{checked[0]}/{len(channels)}，可用频道:{len(results)}个，进度:{numberx:.2f}%")
-            time.sleep(5)
-    # 定义工作线程函数
-    def worker():
-        while True:
-            channel_name, channel_url = task_queue.get()  # 从队列中获取一个任务
-            try:
-                channel_url_t = channel_url.rstrip(channel_url.split('/')[-1])  # m3u8链接前缀
-                lines = requests.get(channel_url,timeout=2).text.strip().split('\n')  # 获取m3u8文件内容
-                ts_lists = [line.split('/')[-1] for line in lines if line.startswith('#') == False]  # 获取m3u8文件下视频流后缀
-                ts_url = channel_url_t + ts_lists[0]  # 拼接单个视频片段下载链接
-                ts_lists_0 = ts_lists[0].rstrip(ts_lists[0].split('.ts')[-1])  # m3u8链接前缀
-                with eventlet.Timeout(5, False):    # 获取视频数据进行5秒钟限制
-                    start_time = time.time()
-                    cont = requests.get(ts_url, timeout=2).content
-                    resp_time = (time.time() - start_time) * 1                    
-                if cont:
-                    checked[0] += 1
-                    with open(ts_lists_0, 'ab') as f:
-                        f.write(cont)  # 写入文件
-                    normalized_speed = max(len(cont) / resp_time / 1024 / 1024, 0.001)
-                    os.remove(ts_lists_0)
-                    result = channel_name, channel_url, f"{normalized_speed:.3f}"
-                    results.append(result)
-            except:
-                checked[0] += 1
-            task_queue.task_done()
-    task_queue = Queue()
-    results = []
-    checked = [0]
-    Thread(target=show_progress, daemon=True).start()
-    for _ in range(20):    # 创建多个工作线程
-        Thread(target=worker, daemon=True).start()
-    for channel in channels:
-        task_queue.put(channel)
-    task_queue.join()
-    return results
-# 替换关键词以规范频道名
-def unify_channel_name(channels_list):
-    new_channels_list =[]
-    for name, channel_url, speed in channels_list:
-        name = name.replace("cctv", "CCTV")
-        name = name.replace("中央", "CCTV")
-        name = name.replace("超清", "")
-        name = name.replace("超高清", "")
-        name = name.replace("高清", "")
-        name = name.replace("HD", "")
-        name = name.replace("标清", "")
-        name = name.replace("频道", "")
-        name = name.replace("记录", "纪录")
-        name = name.replace("-", "")
-        name = name.replace(" ", "")
-        name = name.replace("PLUS", "+")
-        name = name.replace("＋", "+")
-        name = name.replace("(", "")
-        name = name.replace(")", "")
-        name = name.replace("K1", "")
-        name = name.replace("K2", "")
-        name = name.replace("W", "")
-        name = name.replace("w", "")
-        name = re.sub(r"CCTV(\d+)台", r"CCTV\1", name)
-        name = name.replace("CCTV2", "CCTV-2")
-        name = name.replace("CCTV3", "CCTV-3")
-        name = name.replace("CCTV4国际", "CCTV-4中文国际")
-        name = name.replace("CCTV4广电", "CCTV-4中文国际")
-        name = name.replace("CCTV4", "CCTV-4")
-        name = name.replace("CCTV5", "CCTV-5")
-        name = name.replace("CCTV6", "CCTV-6")
-        name = name.replace("CCTV7军事", "CCTV-7国防军事")
-        name = name.replace("CCTV7军农", "CCTV-7国防军事")
-        name = name.replace("CCTV7农业", "CCTV-7国防军事")
-        name = name.replace("CCTV7", "CCTV-7")
-        name = name.replace("CCTV8", "CCTV-8")
-        name = name.replace("CCTV9", "CCTV-9")
-        name = name.replace("CCTV10", "CCTV-10")
-        name = name.replace("CCTV11", "CCTV-11")
-        name = name.replace("CCTV12", "CCTV-12")
-        name = name.replace("CCTV13", "CCTV-13")
-        name = name.replace("CCTV新闻", "CCTV-13新闻")
-        name = name.replace("CCTV14", "CCTV-14")
-        name = name.replace("CCTV少儿", "CCTV-14少儿")
-        name = name.replace("CCTV15", "CCTV-15")
-        name = name.replace("CCTV16", "CCTV-16")
-        name = name.replace("CCTV17农业农村", "CCTV-17农业农村")
-        name = name.replace("CCTV17农业", "CCTV-17农业农村")
-        name = name.replace("CCTV17军农", "CCTV-17农业农村")
-        name = name.replace("CCTV17军事", "CCTV-17农业农村")
-        name = name.replace("CCTV5+体育赛视", "CCTV5+")
-        name = name.replace("CCTV5+体育赛事", "CCTV5+")
-        name = name.replace("CCTV5+体育", "CCTV5+")
-        name = name.replace("CCTV赛事", "CCTV5+")
-        name = name.replace("CCTV5卡", "CCTV5")
-        name = name.replace("CCTV5赛事", "CCTV5+")
-        name = name.replace("CCTV1", "CCTV-1")       
-        
-        name = name.replace("CCTV5+", "CCTV-5+体育赛事")
-        name = name.replace("CCTV足球", "CCTV风云足球")
-        name = name.replace("上海卫视", "东方卫视")
-        name = name.replace("奥运匹克", "")
-        name = name.replace("军农", "")
-        name = name.replace("回放", "")
-        name = name.replace("测试", "")
-        name = name.replace("CCTV教育", "CETV1")
-        name = name.replace("中国教育1", "CETV1")
-        name = name.replace("CETV1中教", "CETV1")
-        name = name.replace("中国教育2", "CETV2")
-        name = name.replace("中国教育4", "CETV4")
-        name = name.replace("CCTV教育", "CETV1")
-        name = name.replace("CCTVnews", "CGTN")
-        name = name.replace("1资讯", "凤凰资讯台")
-        name = name.replace("2中文", "凤凰台")
-        name = name.replace("3XG", "香港台")
-        name = name.replace("上海卫视", "东方卫视")
-        name = name.replace("全纪实", "乐游纪实")
-        name = name.replace("金鹰动画", "金鹰卡通")
-        name = name.replace("河南新农村", "河南乡村")
-        name = name.replace("河南法制", "河南法治")
-        name = name.replace("文物宝库", "收藏天下")
-        name = name.replace("梨园", "河南戏曲")
-        name = name.replace("梨园春", "河南戏曲")
-        name = name.replace("吉林综艺", "吉视综艺文化")
-        name = name.replace("BRTVKAKU", "卡酷少儿")
-        name = name.replace("kaku少儿", "卡酷少儿")
-        name = name.replace("北京卡通", "卡酷少儿")
-        name = name.replace("卡酷卡通", "卡酷少儿")
-        name = name.replace("卡酷动画", "卡酷少儿")
-        name = name.replace("佳佳动画", "嘉佳卡通")
-        name = name.replace("CGTN今日世界", "CGTN")
-        name = name.replace("CGTN英语", "CGTN")
-        name = name.replace("ICS", "上视ICS外语频道")
-        name = name.replace("法制天地", "法治天地")
-        name = name.replace("都市时尚", "都市剧场")
-        name = name.replace("上海炫动卡通", "哈哈炫动")
-        name = name.replace("炫动卡通", "哈哈炫动")
-        name = name.replace("回放", "")
-        name = name.replace("测试", "")
-        name = name.replace("旅游卫视", "海南卫视")
-        name = name.replace("福建东南卫视", "东南卫视")
-        name = name.replace("福建东南", "东南卫视")
-        name = name.replace("南方卫视粤语节目9", "广东大湾区频道")
-        name = name.replace("内蒙古蒙语卫视", "内蒙古蒙语频道")
-        name = name.replace("南方卫视", "广东大湾区频道")
-        name = name.replace("中国教育1", "CETV1")
-        name = name.replace("南方1", "广东经济科教")
-        name = name.replace("南方4", "广东影视频道")
-        name = name.replace("吉林市1", "吉林新闻综合")
-        name = name.replace("CHC家庭影院", "家庭影院")
-        name = name.replace("CHC动作电影", "动作电影")
-        name = name.replace("CHC影迷电影", "影迷电影")
-        name = name.replace("广播电视台", "")
-        name = name.replace("编码", "")
-        name = name.replace("XF", "")
-        new_channels_list.append(f"{name},{channel_url}\n")
-    return new_channels_list
-# 定义排序函数，提取频道名称中的数字并按数字排序
-def channel_key(channel_name):
-    match = re.search(r'\d+', channel_name)
-    return int(match.group()) if match else float('inf')
-# 自定义分组函数
-def classify_channels(input_file, output_file, keywords):
-    keywords_list = keywords.split(',')       # 使用 split(',') 来分割关键词
-    pattern = '|'.join(re.escape(keyword) for keyword in keywords_list)
-    extracted_lines = []
-    with open(input_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            if "genre" not in line:
-                if re.search(pattern, line):
-                    extracted_lines.append(line)
-    with open(output_file, 'w', encoding='utf-8') as out_file:
-        out_file.write(f"{keywords_list[0]},#genre#\n")  # 写入头部信息
-        out_file.writelines(extracted_lines)  # 写入提取的行    
-# 获取酒店源流程        
-def hotel_iptv(config_file):
-    ip_configs = set(read_config(config_file))
-    valid_urls = []
-    channels = []
-    configs =[]
-    url_ends = ["/iptv/live/1000.json?key=txiptv", "/ZHGXTV/Public/json/live_interface.txt"]
-    for url_end in url_ends:
-        for ip, port in ip_configs:
-            configs.append((ip, port, url_end))
-    for ip, port, url_end in configs:
-        valid_urls.extend(scan_ip_port(ip, port, url_end))
-    print(f"扫描完成，获取有效url共：{len(valid_urls)}个")
-    for valid_url in valid_urls:
-        channels.extend(extract_channels(valid_url))
-    print(f"共获取频道：{len(channels)}个\n开始测速")
-    results = speed_test(channels)
-    # 对频道进行排序
-    results.sort(key=lambda x: -float(x[2]))
-    results.sort(key=lambda x: channel_key(x[0]))
-    with open('1.txt', 'a', encoding='utf-8') as f:
-        f.writelines(unify_channel_name(results))
-    print("测速完成")
 
-def main():
-    hotel_config_files = [f"ip/酒店高清.ip", f"ip/酒店标清.ip"]
-    for config_file in hotel_config_files:
-        hotel_iptv(config_file)
-    classify_channels('1.txt', '央视.txt', keywords="央视频道,CCTV,风云剧场,怀旧剧场,第一剧场,兵器,女性,地理,央视文化,风云音乐,CHC")
-    classify_channels('1.txt', '卫视.txt', keywords="卫视频道,卫视")
-    classify_channels('1.txt', '少儿.txt', keywords="少儿频道,少儿,卡通,动漫,炫动")
-    classify_channels('1.txt', '湖南.txt', keywords="湖南频道,湖南,金鹰,潇湘,长沙,南县")
-    classify_channels('1.txt', '广东.txt', keywords="广东频道,广东,客家,广州,珠江")
-    classify_channels('1.txt', '河南.txt', keywords="河南频道,河南,信阳,漯河,郑州,驻马店,平顶山,安阳,武术世界,梨园,南阳")
-    classify_channels('1.txt', '广西.txt', keywords="广西频道,广西,南宁,玉林,桂林,北流")
-    classify_channels('1.txt', '陕西.txt', keywords="陕西频道,陕西,西安")
-    classify_channels('1.txt', '港台.txt', keywords="香港频道,凤凰,香港,明珠台,翡翠台,星河")
-    classify_channels('1.txt', '其他.txt', keywords="其他频道,tsfile")
-    # 合并写入文件
-    file_contents = []
-    file_paths = ["央视.txt","卫视.txt","txt/浙江.txt","少儿.txt","湖南.txt","广东.txt","河南.txt","广西.txt","陕西.txt","港台.txt","其他.txt"]  # 替换为实际的文件路径列表
-    for file_path in file_paths:
-        with open(file_path, 'r', encoding="utf-8") as f:
-            content = f.read()
-            file_contents.append(content)
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    current_time = now.strftime("%Y/%m/%d %H:%M")
-    with open("1.txt", "w", encoding="utf-8") as f:
-        f.write(f"{current_time}更新,#genre#\n")
-        f.write(f"浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n")
-        f.write('\n'.join(file_contents))
-    # 原始顺序去重
-    with open('1.txt', 'r', encoding="utf-8") as f:
+
+def scan_ip_port(ip, port, option, url_end):
+    ip_ports = generate_ip_ports(ip, port, option)
+    valid = []
+    checked = [0]
+
+    def progress():
+        while checked[0] < len(ip_ports):
+            print(f"扫描进度：{checked[0]}/{len(ip_ports)}  有效：{len(valid)}")
+            time.sleep(15)
+    Thread(target=progress, daemon=True).start()
+
+    with ThreadPoolExecutor(300 if option % 2 else 100) as pool:
+        fs = {pool.submit(check_ip_port, ipp, url_end): ipp for ipp in ip_ports}
+        for f in as_completed(fs):
+            res = f.result()
+            if res:
+                valid.append(res)
+            checked[0] += 1
+    return valid
+
+
+def multicast_province(config_file):
+    fname = os.path.basename(config_file)
+    province = fname.split('_')[0]
+    print(f"\n========== {province} 扫描开始 ==========")
+    cfgs = read_config(config_file)
+    all_ip = []
+    for ip, port, opt, ue in cfgs:
+        all_ip += scan_ip_port(ip, port, opt, ue)
+    all_ip = sorted(set(all_ip))
+    print(f"{province} 有效IP：{len(all_ip)}")
+
+    os.makedirs("ip", exist_ok=True)
+    if all_ip:
+        with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
+            f.write('\n'.join(all_ip))
+        tmpl = os.path.join("template", f"template_{province}.txt")
+        if os.path.exists(tmpl):
+            with open(tmpl, 'r', encoding='utf-8') as f:
+                tmp = f.read()
+            out = []
+            for idx, ip in enumerate(all_ip, 1):
+                out.append(f"{province}-组播{idx},#genre#")
+                out.append(tmp.replace("ipipip", ip))
+            with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
+                f.write('\n'.join(out))
+
+
+def txt_to_m3u(txt, m3u):
+    with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    unique_lines = [] 
-    seen_lines = set() 
-    for line in lines:
-        if line not in seen_lines:
-            unique_lines.append(line)
-            seen_lines.add(line)
-    with open('iptv.txt', 'w', encoding="utf-8") as f:
-        f.writelines(unique_lines)
-    # 移除过程文件
-    files_to_remove = ["1.txt","央视.txt","卫视.txt","少儿.txt","湖南.txt","广东.txt","河南.txt","广西.txt","陕西.txt","港台.txt","其他.txt"]
-    for file in files_to_remove:
-        if os.path.exists(file):
-            os.remove(file)
-    print("任务运行完毕，所有频道合并到iptv.txt")
+    with open(m3u, 'w', encoding='utf-8') as f:
+        f.write("#EXTM3U\n")
+        g = ""
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if ",#genre#" in line:
+                g = line.split(',')[0]
+            else:
+                if ',' in line:
+                    n, u = line.split(',', 1)
+                    f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
+
+
+# ==================== 精准测速 ====================
+async def test_speed(session, name, url):
+    try:
+        t0 = time.time()
+        async with session.get(url, timeout=5, allow_redirects=True) as r:
+            await r.content.read(8192)
+        return name, url, time.time() - t0
+    except:
+        return name, url, 99.9
+
+
+# ==================== 同频道内按速度排序，最快第一 ====================
+async def async_speed_sort(channels):
+    sem = asyncio.Semaphore(CONCURRENCY)
+    connector = aiohttp.TCPConnector(ssl=False)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        async def wrapped(item):
+            n, u = item
+            async with sem:
+                return await test_speed(session, n, u)
+        results = await asyncio.gather(*[wrapped(c) for c in channels])
+
+    # 按频道名分组排序
+    groups = defaultdict(list)
+    for n, u, t in results:
+        groups[n].append((t, u))
+
+    sorted_channels = []
+    for name in groups:
+        # 延迟从小到大，最快排最前
+        groups[name].sort(key=lambda x: x[0])
+        for t, u in groups[name]:
+            sorted_channels.append((name, u))
+
+    return sorted_channels
+
+
+# ==================== 主流程 ====================
+async def main():
+    # 1. 扫描逻辑不变
+    for cfg in glob.glob("ip/*_config.txt"):
+        multicast_province(cfg)
+
+    # 2. 收集频道
+    alias_map = load_alias_map()
+    all_channels = []
+    for f in glob.glob("组播_*.txt"):
+        g = None
+        with open(f, 'r', encoding='utf-8') as fobj:
+            for line in fobj:
+                line = line.strip()
+                if ",#genre#" in line:
+                    g = line.split(',')[0]
+                elif ',' in line:
+                    n, u = line.split(',', 1)
+                    n_std = alias_map.get(n.strip(), n.strip())
+                    all_channels.append((n_std, u.strip()))
+
+    # 3. 去重
+    unique = list(dict.fromkeys(all_channels))
+
+    # 4. 测速排序
+    print(f"\n开始测速，共 {len(unique)} 条")
+    sorted_channels = await async_speed_sort(unique)
+
+    # 5. 匹配分类
+    cat_map = load_category_map()
+    cat_result = {k: [] for k in cat_map}
+    uncat = []
+    for n, u in sorted_channels:
+        matched = False
+        for cat, names in cat_map.items():
+            if n in names:
+                cat_result[cat].append((n, u))
+                matched = True
+                break
+        if not matched:
+            uncat.append((n, u))
+
+    # 6. 输出：第一行直接是北京时间作为大类
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    time_str = now.strftime("%Y/%m/%d %H:%M")
+    out_lines = [f"{time_str},#genre#"]
+
+    # 写入正常分类
+    for cat, items in cat_result.items():
+        out_lines.append(f"{cat},#genre#")
+        out_lines += [f"{n},{u}" for n, u in items]
+
+    # 未匹配频道
+    if uncat:
+        out_lines.append("未匹配频道,#genre#")
+        out_lines += [f"{n},{u}" for n, u in uncat]
+
+    # 保存文件
+    with open("zubo_all.txt", 'w', encoding='utf-8') as f:
+        f.write('\n'.join(out_lines))
+    txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
+
+    print("\n========== 完成 ==========")
+    print("更新时间已作为大类")
+    print("同频道测速排序：最快排第一")
+    print("未匹配频道已归类")
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
