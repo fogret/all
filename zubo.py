@@ -149,7 +149,7 @@ def multicast_province(config_file):
 def txt_to_m3u(txt, m3u):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    now = datetime.datetime.now(dat.timezone(dat.timedelta(hours=8)))
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     update_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     with open(m3u, 'w', encoding='utf-8') as f:
@@ -188,7 +188,6 @@ async def async_speed_sort(channels):
         tasks = [test_speed(session, sem, n, u) for n, u in channels]
         results = await asyncio.gather(*tasks)
 
-    # 按频道名分组，同频道内按速度排序
     groups = defaultdict(list)
     for n, u, t in results:
         groups[n].append((t, u))
@@ -229,9 +228,8 @@ async def main():
     print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     sorted_channels = await async_speed_sort(unique)
 
-    # 5. 严格按 demo.txt 顺序输出，不打乱
+    # 5. 严格按 demo.txt 顺序输出
     cat_map = load_category_map()
-    channel_dict = {(n, u): True for n, u in sorted_channels}
 
     out_lines = []
 
@@ -239,7 +237,6 @@ async def main():
     for cat, names in cat_map.items():
         out_lines.append(f"{cat},#genre#")
         for name in names:
-            # 把这个名字的所有源按测速顺序输出
             for (n, u) in sorted_channels:
                 if n == name:
                     out_lines.append(f"{n},{u}")
@@ -263,7 +260,7 @@ async def main():
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
 
-    # 写入 m3u（带你要的更新时间格式）
+    # 写入 m3u
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
 
     print("\n========== 全部完成 ==========")
