@@ -163,22 +163,26 @@ def txt_to_m3u(txt, m3u):
                     f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
 
 
-# ==================== 异步测速 ====================
-async def test_speed(session, name, url):
+# ==================== 修复后：精准异步测速 + 正确排序 ====================
+async def test_speed(session, sem, name, url):
     try:
-        t0 = time.time()
-        async with session.get(url, timeout=8) as r:
-            await r.read(2048)
-        return name, url, time.time() - t0
+        async with sem:
+            t0 = time.perf_counter()
+            async with session.get(url, timeout=6) as r:
+                await r.content.read(16384)
+            cost = time.perf_counter() - t0
+            return name, url, cost
     except:
-        return name, url, 999
+        return name, url, 99.9
 
 
 async def async_speed_sort(channels):
-    connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as s:
-        tasks = [test_speed(s, n, u) for n, u in channels]
+    sem = asyncio.Semaphore(CONCURRENCY)
+    connector = aiohttp.TCPConnector(ssl=False, limit=CONCURRENCY)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [test_speed(session, sem, n, u) for n, u in channels]
         results = await asyncio.gather(*tasks)
+    # 按延迟从小到大排序，最快排第一
     results.sort(key=lambda x: x[2])
     return [(n, u) for n, u, t in results]
 
