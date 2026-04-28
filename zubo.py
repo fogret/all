@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-from threading import Thread
 import os
 import time
 import datetime
 import glob
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
 from collections import defaultdict
@@ -53,7 +51,7 @@ def load_category_map():
     return category_map
 
 
-# ==================== 原代码完全保留 ====================
+# ==================== 原扫描配置读取逻辑（保留） ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -122,15 +120,13 @@ async def async_scan_ip_port(ip, port, option, url_end):
     return results
 
 
-def multicast_province(config_file):
+# ==================== ⭐ 修复后的 multicast_province（async 版本） ====================
+async def multicast_province(config_file):
     fname = os.path.basename(config_file)
     province = fname.split('_')[0]
     print(f"\n========== {province} 扫描开始 ==========")
     cfgs = read_config(config_file)
 
-    all_ip = []
-
-    # ⭐ 使用异步扫描替代 ThreadPoolExecutor（速度提升 5–20 倍）
     async def run_all():
         tasks = [
             async_scan_ip_port(ip, port, opt, ue)
@@ -142,7 +138,7 @@ def multicast_province(config_file):
             merged.extend(r)
         return sorted(set(merged))
 
-    all_ip = asyncio.run(run_all())
+    all_ip = await run_all()
 
     print(f"{province} 有效IP：{len(all_ip)}")
 
@@ -219,9 +215,9 @@ async def async_speed_sort(channels):
 
 # ==================== 主流程 ====================
 async def main():
-    # 1. 原样运行原有扫描逻辑（但内部已优化）
+    # 1. 扫描所有省份（异步）
     for cfg in glob.glob("ip/*_config.txt"):
-        multicast_province(cfg)
+        await multicast_province(cfg)
 
     # 2. 收集所有频道
     alias_map = load_alias_map()
@@ -241,16 +237,14 @@ async def main():
     # 3. 去重
     unique = list(dict.fromkeys(all_channels))
 
-    # 4. 测速：只给同频道多源排序
+    # 4. 测速
     print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     sorted_channels = await async_speed_sort(unique)
 
-    # 5. 严格按 demo.txt 顺序输出
+    # 5. 分类输出
     cat_map = load_category_map()
-
     out_lines = []
 
-    # 按 demo 分类顺序
     for cat, names in cat_map.items():
         out_lines.append(f"{cat},#genre#")
         for name in names:
