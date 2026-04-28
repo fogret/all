@@ -86,7 +86,7 @@ def generate_ip_ports(ip, port, option):
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
 
-# ==================== ⭐ 优化后的异步扫描（结果完全一致） ====================
+# ==================== ⭐ 优化后的异步扫描（含进度日志） ====================
 async def async_check_ip_port(session, ip_port, url_end, sem):
     url = f"http://{ip_port}{url_end}"
     try:
@@ -101,19 +101,29 @@ async def async_check_ip_port(session, ip_port, url_end, sem):
 
 async def async_scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
+    total = len(ip_ports)
+
+    print(f"开始扫描：共 {total} 个 IP")
 
     sem = asyncio.Semaphore(300)
     connector = aiohttp.TCPConnector(limit=300, ssl=False)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [
-            async_check_ip_port(session, ipp, url_end, sem)
-            for ipp in ip_ports
-        ]
+        tasks = [async_check_ip_port(session, ipp, url_end, sem) for ipp in ip_ports]
 
         results = []
+        completed = 0
+        last_log = time.time()
+
         for coro in asyncio.as_completed(tasks):
             res = await coro
+            completed += 1
+
+            # 每 5 秒输出一次进度
+            if time.time() - last_log >= 5:
+                print(f"扫描进度：{completed} / {total}")
+                last_log = time.time()
+
             if res:
                 results.append(res)
 
@@ -125,6 +135,7 @@ async def multicast_province(config_file):
     fname = os.path.basename(config_file)
     province = fname.split('_')[0]
     print(f"\n========== {province} 扫描开始 ==========")
+
     cfgs = read_config(config_file)
 
     async def run_all():
@@ -181,7 +192,7 @@ def txt_to_m3u(txt, m3u):
                     f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
 
 
-# ==================== 异步测速 ====================
+# ==================== ⭐ 异步测速（含进度日志） ====================
 async def test_speed(session, sem, name, url):
     try:
         async with sem:
@@ -195,11 +206,30 @@ async def test_speed(session, sem, name, url):
 
 
 async def async_speed_sort(channels):
+    total = len(channels)
+    print(f"开始测速，共 {total} 条")
+
     sem = asyncio.Semaphore(CONCURRENCY)
     connector = aiohttp.TCPConnector(ssl=False, limit=CONCURRENCY)
+
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [test_speed(session, sem, n, u) for n, u in channels]
-        results = await asyncio.gather(*tasks)
+
+        results = []
+        completed = 0
+        last_log = time.time()
+
+        for coro in asyncio.as_completed(tasks):
+            res = await coro
+            results.append(res)
+            completed += 1
+
+            # 每 5 秒输出一次进度
+            if time.time() - last_log >= 5:
+                print(f"测速进度：{completed} / {total}")
+                last_log = time.time()
+
+    print("测速完成")
 
     groups = defaultdict(list)
     for n, u, t in results:
@@ -210,6 +240,7 @@ async def async_speed_sort(channels):
         groups[name].sort(key=lambda x: x[0])
         for t, u in groups[name]:
             sorted_channels.append((name, u))
+
     return sorted_channels
 
 
@@ -238,7 +269,6 @@ async def main():
     unique = list(dict.fromkeys(all_channels))
 
     # 4. 测速
-    print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     sorted_channels = await async_speed_sort(unique)
 
     # 5. 分类输出
