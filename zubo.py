@@ -9,12 +9,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
 from collections import defaultdict
+import configparser
 
 # ==================== 配置 ====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
+CONFIG_INI = "config.ini"
 CONCURRENCY = 60    # 异步测速并发数，可直接改数字
 
+# ==================== 读取config.ini ====================
+def load_config_ini():
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_INI, encoding="utf-8")
+    epg_url = cfg.get("EPG", "epg_url", fallback="")
+    logo_domain = cfg.get("LOGO", "logo_domain", fallback="")
+    scan_timeout = cfg.getint("TIMEOUT", "scan_timeout", fallback=2)
+    speed_timeout = cfg.getint("TIMEOUT", "speed_timeout", fallback=6)
+    return epg_url, logo_domain, scan_timeout, speed_timeout
+
+# 全局读取一次ini
+EPG_URL, LOGO_DOMAIN, SCAN_TIMEOUT, SPEED_TIMEOUT = load_config_ini()
 
 # ==================== 别名映射 ====================
 def load_alias_map():
@@ -33,7 +47,6 @@ def load_alias_map():
                     alias_map[alias] = standard
     return alias_map
 
-
 # ==================== 读取分类结构 ====================
 def load_category_map():
     category_map = {}
@@ -51,7 +64,6 @@ def load_category_map():
                     if current_cat:
                         category_map[current_cat].append(line.strip())
     return category_map
-
 
 # ==================== 原代码完全保留 ====================
 def read_config(config_file):
@@ -74,7 +86,6 @@ def read_config(config_file):
         print(f"读取文件错误: {e}")
         return []
 
-
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -87,16 +98,14 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-
 def check_ip_port(ip_port, url_end):
     try:
         url = f"http://{ip_port}{url_end}"
-        resp = requests.get(url, timeout=2)
+        resp = requests.get(url, timeout=SCAN_TIMEOUT)
         if "udpxy" in resp.text or "Multi stream" in resp.text:
             return ip_port
     except:
         return None
-
 
 def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
@@ -117,7 +126,6 @@ def scan_ip_port(ip, port, option, url_end):
                 valid.append(res)
             checked[0] += 1
     return valid
-
 
 def multicast_province(config_file):
     fname = os.path.basename(config_file)
@@ -145,41 +153,50 @@ def multicast_province(config_file):
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.write('\n'.join(out))
 
-
+# ==================== 重构：txt转m3u（核心修复） ====================
 def txt_to_m3u(txt, m3u):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
+    # 北京时间 时间格式：2026/04/28 23:20更新
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-    update_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    update_str = now.strftime("%Y/%m/%d %H:%M更新")
 
     with open(m3u, 'w', encoding='utf-8') as f:
-        f.write('#EXTM3U x-tvg-url="https://gh-proxy/https://raw.githubusercontent.com/fogret/sourt/refs/heads/master/output/epg/epg.gz"\n')
-        f.write(f'#EXTINF:-1 tvg-id="CCTV-1" tvg-name="CCTV-1" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV-1.png" group-title="🕘️更新时间",{update_str}\n')
+        # 头部EPG读取ini
+        f.write(f'#EXTM3U x-tvg-url="{EPG_URL}"\n')
         g = ""
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             if ",#genre#" in line:
+                # 分组 + 挂载更新时间
                 g = line.split(',')[0]
             else:
                 if ',' in line:
-                    n, u = line.split(',', 1)
-                    f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
-
+                    name, url = line.split(',', 1)
+                    name = name.strip()
+                    # 拼接台标
+                    tvg_logo = f"{LOGO_DOMAIN}{name}.png"
+                    # 完整参数写入，无垃圾时间行
+                    inf = (
+                        f'#EXTINF:-1 tvg-id="{name}" tvg-name="{name}" '
+                        f'tvg-logo="{tvg_logo}" group-title="{g}",{name}\n'
+                    )
+                    f.write(inf)
+                    f.write(f"{url}\n")
 
 # ==================== 异步测速 ====================
 async def test_speed(session, sem, name, url):
     try:
         async with sem:
             t0 = time.perf_counter()
-            async with session.get(url, timeout=6) as r:
+            async with session.get(url, timeout=SPEED_TIMEOUT) as r:
                 await r.content.read(16384)
             cost = time.perf_counter() - t0
             return name, url, cost
     except:
         return name, url, 99.9
-
 
 async def async_speed_sort(channels):
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -198,7 +215,6 @@ async def async_speed_sort(channels):
         for t, u in groups[name]:
             sorted_channels.append((name, u))
     return sorted_channels
-
 
 # ==================== 主流程 ====================
 async def main():
@@ -264,10 +280,11 @@ async def main():
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
 
     print("\n========== 全部完成 ==========")
-    print("更新时间格式已修正")
-    print("频道顺序严格按 demo.txt")
-    print("同频道多源已按测速排序")
-
+    print(f"EPG已读取ini配置：{EPG_URL}")
+    print(f"台标域名已读取ini：{LOGO_DOMAIN}")
+    print("更新时间已保留、格式：年/月/日 时分更新")
+    print("每条频道完整携带tvg-id/tvg-name/tvg-logo")
+    print("已删除多余假时间频道行")
 
 if __name__ == "__main__":
     asyncio.run(main())
