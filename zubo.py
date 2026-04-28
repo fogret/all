@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
+from threading import Thread
 import os
 import time
 import datetime
 import glob
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
 from collections import defaultdict
@@ -51,7 +53,7 @@ def load_category_map():
     return category_map
 
 
-# ==================== 原扫描配置读取逻辑（保留） ====================
+# ==================== 原代码完全保留 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -86,71 +88,46 @@ def generate_ip_ports(ip, port, option):
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
 
-# ==================== ⭐ 优化后的异步扫描（含进度日志） ====================
-async def async_check_ip_port(session, ip_port, url_end, sem):
-    url = f"http://{ip_port}{url_end}"
+def check_ip_port(ip_port, url_end):
     try:
-        async with sem:
-            async with session.get(url, timeout=3) as r:
-                text = await r.text()
-                if "udpxy" in text or "Multi stream" in text:
-                    return ip_port
+        url = f"http://{ip_port}{url_end}"
+        resp = requests.get(url, timeout=2)
+        if "udpxy" in resp.text or "Multi stream" in resp.text:
+            return ip_port
     except:
         return None
 
 
-async def async_scan_ip_port(ip, port, option, url_end):
+def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
-    total = len(ip_ports)
+    valid = []
+    checked = [0]
 
-    print(f"开始扫描：共 {total} 个 IP")
+    def progress():
+        while checked[0] < len(ip_ports):
+            print(f"扫描进度：{checked[0]}/{len(ip_ports)}  有效：{len(valid)}")
+            time.sleep(15)
+    Thread(target=progress, daemon=True).start()
 
-    sem = asyncio.Semaphore(300)
-    connector = aiohttp.TCPConnector(limit=300, ssl=False)
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [async_check_ip_port(session, ipp, url_end, sem) for ipp in ip_ports]
-
-        results = []
-        completed = 0
-        last_log = time.time()
-
-        for coro in asyncio.as_completed(tasks):
-            res = await coro
-            completed += 1
-
-            # 每 5 秒输出一次进度
-            if time.time() - last_log >= 5:
-                print(f"扫描进度：{completed} / {total}")
-                last_log = time.time()
-
+    with ThreadPoolExecutor(300 if option % 2 else 100) as pool:
+        fs = {pool.submit(check_ip_port, ipp, url_end): ipp for ipp in ip_ports}
+        for f in as_completed(fs):
+            res = f.result()
             if res:
-                results.append(res)
+                valid.append(res)
+            checked[0] += 1
+    return valid
 
-    return results
 
-
-# ==================== ⭐ 修复后的 multicast_province（async 版本） ====================
-async def multicast_province(config_file):
+def multicast_province(config_file):
     fname = os.path.basename(config_file)
     province = fname.split('_')[0]
     print(f"\n========== {province} 扫描开始 ==========")
-
     cfgs = read_config(config_file)
-
-    async def run_all():
-        tasks = [
-            async_scan_ip_port(ip, port, opt, ue)
-            for ip, port, opt, ue in cfgs
-        ]
-        results = await asyncio.gather(*tasks)
-        merged = []
-        for r in results:
-            merged.extend(r)
-        return sorted(set(merged))
-
-    all_ip = await run_all()
-
+    all_ip = []
+    for ip, port, opt, ue in cfgs:
+        all_ip += scan_ip_port(ip, port, opt, ue)
+    all_ip = sorted(set(all_ip))
     print(f"{province} 有效IP：{len(all_ip)}")
 
     os.makedirs("ip", exist_ok=True)
@@ -169,7 +146,6 @@ async def multicast_province(config_file):
                 f.write('\n'.join(out))
 
 
-# ==================== M3U 输出 ====================
 def txt_to_m3u(txt, m3u):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -192,7 +168,7 @@ def txt_to_m3u(txt, m3u):
                     f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
 
 
-# ==================== ⭐ 异步测速（含进度日志） ====================
+# ==================== 异步测速 ====================
 async def test_speed(session, sem, name, url):
     try:
         async with sem:
@@ -206,30 +182,11 @@ async def test_speed(session, sem, name, url):
 
 
 async def async_speed_sort(channels):
-    total = len(channels)
-    print(f"开始测速，共 {total} 条")
-
     sem = asyncio.Semaphore(CONCURRENCY)
     connector = aiohttp.TCPConnector(ssl=False, limit=CONCURRENCY)
-
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [test_speed(session, sem, n, u) for n, u in channels]
-
-        results = []
-        completed = 0
-        last_log = time.time()
-
-        for coro in asyncio.as_completed(tasks):
-            res = await coro
-            results.append(res)
-            completed += 1
-
-            # 每 5 秒输出一次进度
-            if time.time() - last_log >= 5:
-                print(f"测速进度：{completed} / {total}")
-                last_log = time.time()
-
-    print("测速完成")
+        results = await asyncio.gather(*tasks)
 
     groups = defaultdict(list)
     for n, u, t in results:
@@ -240,15 +197,14 @@ async def async_speed_sort(channels):
         groups[name].sort(key=lambda x: x[0])
         for t, u in groups[name]:
             sorted_channels.append((name, u))
-
     return sorted_channels
 
 
 # ==================== 主流程 ====================
 async def main():
-    # 1. 扫描所有省份（异步）
+    # 1. 原样运行原有扫描逻辑
     for cfg in glob.glob("ip/*_config.txt"):
-        await multicast_province(cfg)
+        multicast_province(cfg)
 
     # 2. 收集所有频道
     alias_map = load_alias_map()
@@ -268,13 +224,16 @@ async def main():
     # 3. 去重
     unique = list(dict.fromkeys(all_channels))
 
-    # 4. 测速
+    # 4. 测速：只给同频道多源排序
+    print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     sorted_channels = await async_speed_sort(unique)
 
-    # 5. 分类输出
+    # 5. 严格按 demo.txt 顺序输出
     cat_map = load_category_map()
+
     out_lines = []
 
+    # 按 demo 分类顺序
     for cat, names in cat_map.items():
         out_lines.append(f"{cat},#genre#")
         for name in names:
