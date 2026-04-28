@@ -8,6 +8,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import asyncio
+from collections import defaultdict
 
 # ==================== 配置 ====================
 ALIAS_FILE = "alias.txt"
@@ -148,8 +149,12 @@ def multicast_province(config_file):
 def txt_to_m3u(txt, m3u):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
+    now = datetime.datetime.now(dat.timezone(dat.timedelta(hours=8)))
+    update_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
     with open(m3u, 'w', encoding='utf-8') as f:
-        f.write("#EXTM3U\n")
+        f.write('#EXTM3U x-tvg-url="https://gh-proxy/https://raw.githubusercontent.com/fogret/sourt/refs/heads/master/output/epg/epg.gz"\n')
+        f.write(f'#EXTINF:-1 tvg-id="CCTV-1" tvg-name="CCTV-1" tvg-logo="https://www.xn--rgv465a.top/tvlogo/CCTV-1.png" group-title="🕘️更新时间",{update_str}\n')
         g = ""
         for line in lines:
             line = line.strip()
@@ -163,7 +168,7 @@ def txt_to_m3u(txt, m3u):
                     f.write(f'#EXTINF:-1 group-title="{g}",{n}\n{u}\n')
 
 
-# ==================== 修复后：精准异步测速 + 正确排序 ====================
+# ==================== 异步测速 ====================
 async def test_speed(session, sem, name, url):
     try:
         async with sem:
@@ -182,12 +187,21 @@ async def async_speed_sort(channels):
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [test_speed(session, sem, n, u) for n, u in channels]
         results = await asyncio.gather(*tasks)
-    # 按延迟从小到大排序，最快排第一
-    results.sort(key=lambda x: x[2])
-    return [(n, u) for n, u, t in results]
+
+    # 按频道名分组，同频道内按速度排序
+    groups = defaultdict(list)
+    for n, u, t in results:
+        groups[n].append((t, u))
+
+    sorted_channels = []
+    for name in groups:
+        groups[name].sort(key=lambda x: x[0])
+        for t, u in groups[name]:
+            sorted_channels.append((name, u))
+    return sorted_channels
 
 
-# ==================== 主流程：完全按你的要求 ====================
+# ==================== 主流程 ====================
 async def main():
     # 1. 原样运行原有扫描逻辑
     for cfg in glob.glob("ip/*_config.txt"):
@@ -209,55 +223,53 @@ async def main():
                     all_channels.append((n_std, u.strip()))
 
     # 3. 去重
-    unique = {}
-    for n, u in all_channels:
-        unique[(n, u)] = u
-    unique = list(unique.keys())
+    unique = list(dict.fromkeys(all_channels))
 
-    # 4. 异步测速排序（快的在前，全部保留）
+    # 4. 测速：只给同频道多源排序
     print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
-    unique = await async_speed_sort(unique)
+    sorted_channels = await async_speed_sort(unique)
 
-    # 5. 按 demo 分类
+    # 5. 严格按 demo.txt 顺序输出，不打乱
     cat_map = load_category_map()
-    cat_to_channels = {k: [] for k in cat_map}
+    channel_dict = {(n, u): True for n, u in sorted_channels}
+
+    out_lines = []
+
+    # 按 demo 分类顺序
+    for cat, names in cat_map.items():
+        out_lines.append(f"{cat},#genre#")
+        for name in names:
+            # 把这个名字的所有源按测速顺序输出
+            for (n, u) in sorted_channels:
+                if n == name:
+                    out_lines.append(f"{n},{u}")
+
+    # 未匹配
     uncat = []
-    for n, u in unique:
-        placed = False
-        for cat, names in cat_map.items():
+    for n, u in sorted_channels:
+        found = False
+        for names in cat_map.values():
             if n in names:
-                cat_to_channels[cat].append((n, u))
-                placed = True
+                found = True
                 break
-        if not placed:
+        if not found:
             uncat.append((n, u))
 
-    # 6. 写入最终文件 + 北京时间更新（按你要求修改）
-    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-    update_str = now.strftime("%Y/%m/%d %H:%M")
-    
-    # 大类名：更新时间，频道名：北京更新时间
-    out_lines = [
-        "更新时间,#genre#",
-        f"北京更新时间,{update_str}"
-    ]
-
-    for cat, items in cat_to_channels.items():
-        out_lines.append(f"{cat},#genre#")
-        out_lines += [f"{n},{u}" for n, u in items]
-    
-    # 未匹配归到“未匹配频道”
     if uncat:
         out_lines.append("未匹配频道,#genre#")
         out_lines += [f"{n},{u}" for n, u in uncat]
 
+    # 写入 txt
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
+
+    # 写入 m3u（带你要的更新时间格式）
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
 
     print("\n========== 全部完成 ==========")
-    print("更新时间已写入")
-    print("统一名称 + 分类 + 测速排序完成")
+    print("更新时间格式已修正")
+    print("频道顺序严格按 demo.txt")
+    print("同频道多源已按测速排序")
 
 
 if __name__ == "__main__":
