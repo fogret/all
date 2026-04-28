@@ -15,7 +15,7 @@ import configparser
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
-CONCURRENCY = 60    # 异步测速并发数，可直接改数字
+CONCURRENCY = 60
 
 # ==================== 读取config.ini ====================
 def load_config_ini():
@@ -24,10 +24,9 @@ def load_config_ini():
     epg_url = cfg.get("EPG", "epg_url", fallback="")
     logo_domain = cfg.get("LOGO", "logo_domain", fallback="")
     scan_timeout = cfg.getint("TIMEOUT", "scan_timeout", fallback=2)
-    speed_timeout = cfg.getint("TIMEOUT", "speed_timeout", fallback=6)
+    speed_timeout = cfg.getint("TIMEOUT", "speed_timeout", fallback=8)
     return epg_url, logo_domain, scan_timeout, speed_timeout
 
-# 全局读取一次ini
 EPG_URL, LOGO_DOMAIN, SCAN_TIMEOUT, SPEED_TIMEOUT = load_config_ini()
 
 # ==================== 别名映射 ====================
@@ -65,7 +64,7 @@ def load_category_map():
                         category_map[current_cat].append(line.strip())
     return category_map
 
-# ==================== 原代码完全保留 ====================
+# ==================== 读取IP配置 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -153,16 +152,14 @@ def multicast_province(config_file):
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.write('\n'.join(out))
 
-# ==================== 重构：txt转m3u（核心修复） ====================
+# ==================== TXT转M3U 修复版 ====================
 def txt_to_m3u(txt, m3u):
     with open(txt, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    # 北京时间 时间格式：2026/04/28 23:20更新
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     update_str = now.strftime("%Y/%m/%d %H:%M更新")
 
     with open(m3u, 'w', encoding='utf-8') as f:
-        # 头部EPG读取ini
         f.write(f'#EXTM3U x-tvg-url="{EPG_URL}"\n')
         g = ""
         for line in lines:
@@ -170,32 +167,38 @@ def txt_to_m3u(txt, m3u):
             if not line:
                 continue
             if ",#genre#" in line:
-                # 分组 + 挂载更新时间
-                g = line.split(',')[0]
+                g = line.split(',')[0].strip()
             else:
                 if ',' in line:
                     name, url = line.split(',', 1)
                     name = name.strip()
-                    # 拼接台标
                     tvg_logo = f"{LOGO_DOMAIN}{name}.png"
-                    # 完整参数写入，无垃圾时间行
-                    inf = (
+                    line_inf = (
                         f'#EXTINF:-1 tvg-id="{name}" tvg-name="{name}" '
                         f'tvg-logo="{tvg_logo}" group-title="{g}",{name}\n'
                     )
-                    f.write(inf)
+                    f.write(line_inf)
                     f.write(f"{url}\n")
 
-# ==================== 异步测速 ====================
+# ==================== 异步测速 稳定修复版 ====================
 async def test_speed(session, sem, name, url):
     try:
         async with sem:
             t0 = time.perf_counter()
             async with session.get(url, timeout=SPEED_TIMEOUT) as r:
-                await r.content.read(16384)
+                total_read = 0
+                # 持续拉流2.5秒，过滤瞬时假快
+                while time.perf_counter() - t0 < 2.5:
+                    chunk = await r.content.read(32768)
+                    if not chunk:
+                        break
+                    total_read += len(chunk)
+            # 有效数据过少直接判定失效
+            if total_read < 8192:
+                return name, url, 99.9
             cost = time.perf_counter() - t0
             return name, url, cost
-    except:
+    except Exception:
         return name, url, 99.9
 
 async def async_speed_sort(channels):
@@ -211,18 +214,17 @@ async def async_speed_sort(channels):
 
     sorted_channels = []
     for name in groups:
-        groups[name].sort(key=lambda x: x[0])
+        # 超过3秒不稳定源后置，优先稳定源
+        groups[name].sort(key=lambda x: (x[0] if x[0] < 3.0 else 999))
         for t, u in groups[name]:
             sorted_channels.append((name, u))
     return sorted_channels
 
 # ==================== 主流程 ====================
 async def main():
-    # 1. 原样运行原有扫描逻辑
     for cfg in glob.glob("ip/*_config.txt"):
         multicast_province(cfg)
 
-    # 2. 收集所有频道
     alias_map = load_alias_map()
     all_channels = []
     for f in glob.glob("组播_*.txt"):
@@ -237,19 +239,14 @@ async def main():
                     n_std = alias_map.get(n.strip(), n.strip())
                     all_channels.append((n_std, u.strip()))
 
-    # 3. 去重
     unique = list(dict.fromkeys(all_channels))
 
-    # 4. 测速：只给同频道多源排序
     print(f"\n开始测速，共 {len(unique)} 条，并发 {CONCURRENCY}")
     sorted_channels = await async_speed_sort(unique)
 
-    # 5. 严格按 demo.txt 顺序输出
     cat_map = load_category_map()
-
     out_lines = []
 
-    # 按 demo 分类顺序
     for cat, names in cat_map.items():
         out_lines.append(f"{cat},#genre#")
         for name in names:
@@ -257,7 +254,6 @@ async def main():
                 if n == name:
                     out_lines.append(f"{n},{u}")
 
-    # 未匹配
     uncat = []
     for n, u in sorted_channels:
         found = False
@@ -272,19 +268,16 @@ async def main():
         out_lines.append("未匹配频道,#genre#")
         out_lines += [f"{n},{u}" for n, u in uncat]
 
-    # 写入 txt
     with open("zubo_all.txt", 'w', encoding='utf-8') as f:
         f.write('\n'.join(out_lines))
 
-    # 写入 m3u
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
 
     print("\n========== 全部完成 ==========")
-    print(f"EPG已读取ini配置：{EPG_URL}")
-    print(f"台标域名已读取ini：{LOGO_DOMAIN}")
-    print("更新时间已保留、格式：年/月/日 时分更新")
-    print("每条频道完整携带tvg-id/tvg-name/tvg-logo")
-    print("已删除多余假时间频道行")
+    print("✅ 已读取config.ini台标、EPG配置")
+    print("✅ 每条频道完整tvg参数，图标正常")
+    print("✅ 时间格式规范，无垃圾时间行")
+    print("✅ 测速已修复，优先稳定源")
 
 if __name__ == "__main__":
     asyncio.run(main())
