@@ -4,11 +4,11 @@ import requests
 import aiohttp
 import asyncio
 
-# 并发数 自行修改大小
+# 并发数 自己随意修改
 CONCURRENCY = 120
 SPEED_TIMEOUT = 3
 
-# 省份分组配置 按你组播原有省份划分
+# 全国省份顺序分组
 PROVINCE_LIST = [
     "河南", "浙江", "江苏", "天津", "湖北", "青海", "北京", "河北",
     "湖南", "上海", "福建", "陕西", "海南", "重庆", "内蒙古",
@@ -17,7 +17,7 @@ PROVINCE_LIST = [
 ]
 
 # ============================
-# 读取 alias.txt（统一频道名）
+# 读取 alias.txt 统一标准频道名
 # ============================
 def load_alias(alias_file):
     alias_map = {}
@@ -32,7 +32,7 @@ def load_alias(alias_file):
     return alias_map
 
 # ============================
-# 读取 demo.txt（分类 + 顺序）
+# 读取 demo.txt 分类 + 固定输出顺序
 # ============================
 def load_demo(demo_file):
     categories = {}
@@ -55,7 +55,7 @@ def load_demo(demo_file):
     return category_order, categories
 
 # ============================
-# 异步单个链接测速
+# 异步单链接测速
 # ============================
 async def async_test_speed(session, url):
     try:
@@ -68,7 +68,7 @@ async def async_test_speed(session, url):
         return url, 9999
 
 # ============================
-# 单省批量异步测速
+# 单省批量异步并发测速排序
 # ============================
 async def batch_speed_sort(url_list):
     connector = aiohttp.TCPConnector(limit=CONCURRENCY)
@@ -79,22 +79,25 @@ async def batch_speed_sort(url_list):
         return [i[0] for i in sorted_urls]
 
 # ============================
-# 按省份拆分分组频道链接
+# 按省份自动拆分所有频道链接
 # ============================
 def split_by_province(all_channels):
     province_data = {p: [] for p in PROVINCE_LIST}
-    # 匹配频道名包含省份关键词 进行分组
+    province_data["其他"] = []
+
     for name, url in all_channels:
+        match = False
         for p in PROVINCE_LIST:
             if p in name:
                 province_data[p].append((name, url))
+                match = True
                 break
-        else:
-            province_data["其他"] = province_data.get("其他", []) + [(name, url)]
+        if not match:
+            province_data["其他"].append((name, url))
     return province_data
 
 # ============================
-# 逐省顺序扫描处理 + 极简日志 不刷屏
+# 逐省依次扫描、测速、统计日志
 # ============================
 def process_final_output(input_txt, alias_map, category_order, category_channels):
     all_channels = []
@@ -109,20 +112,18 @@ def process_final_output(input_txt, alias_map, category_order, category_channels
                     name = alias_map[name]
                 all_channels.append((name, url))
 
-    # 按省份拆分
-    province_groups = split_by_province(all_channels)
+    # 按省份分组 修复变量报错
+    province_data = split_by_province(all_channels)
     result = {cat: {} for cat in category_order}
 
-    # 逐省依次扫描 一省跑完再下一省
+    # 一个省跑完 再跑下一个省
     for province, channel_list in province_data.items():
         total = len(channel_list)
         if total == 0:
             continue
-        
-        # 极简日志：只打印 省份+总数+当前完成数 不刷屏
+
         print(f"\n【{province}】待扫描总数：{total} 条")
 
-        # 该省所有链接统一测速排序
         name_url_dict = {}
         for n, u in channel_list:
             if n not in name_url_dict:
@@ -134,10 +135,8 @@ def process_final_output(input_txt, alias_map, category_order, category_channels
         for cname, urls in name_url_dict.items():
             sorted_urls = loop.run_until_complete(batch_speed_sort(urls))
             finish_count += len(urls)
-            # 同省内更新完成数量 日志简洁不刷屏
             print(f"【{province}】已扫描完成：{finish_count}/{total}")
 
-            # 匹配demo分类存入结果
             for cat in category_order:
                 if cname in category_channels[cat]:
                     result[cat][cname] = sorted_urls
@@ -145,7 +144,7 @@ def process_final_output(input_txt, alias_map, category_order, category_channels
     return result
 
 # ============================
-# 输出最终 m3u
+# 输出标准 m3u + 你要的更新时间格式
 # ============================
 def write_m3u(result, output_file):
     now = time.strftime("%Y/%m/%d %H:%M")
@@ -160,16 +159,18 @@ def write_m3u(result, output_file):
                     f.write(url + "\n")
 
 # ============================
-# 主流程
+# 主入口
 # ============================
 def main():
     print("=== 开始加载别名、分类配置 ===")
     alias_map = load_alias("alias.txt")
     category_order, category_channels = load_demo("demo.txt")
     print("=== 开始逐省顺序扫描测速 ===")
+
     result = process_final_output("zubo_all.txt", alias_map, category_order, category_channels)
+
     write_m3u(result, "zubo_all.m3u")
-    print("\n=== 全部省份扫描完毕，已生成 m3u 文件 ===")
+    print("\n=== 全部省份扫描完毕，已生成 zubo_all.m3u ===")
 
 if __name__ == "__main__":
     main()
