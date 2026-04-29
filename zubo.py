@@ -176,10 +176,13 @@ def process_all():
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     update_time = now.strftime('%Y/%m/%d %H:%M')
 
-    # 写入更新时间
-    output_lines.append(f"{update_time}更新,#genre#\n")
+    # 只写一个更新时间，不当分类
+    output_lines.append(f"更新时间,{update_time}\n")
+
+    # 写入浙江卫视（你原来就有）
     output_lines.append("浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n")
 
+    # 分类输出
     for cate in demo_list:
         output_lines.append(f"{cate},#genre#\n")
         cate_channels = [name for name in grouped if cate in name]
@@ -216,6 +219,11 @@ def txt_to_m3u(input_file, output_file, update_time):
             line = line.strip()
             if "," in line:
                 name, url = line.split(",", 1)
+
+                # 跳过更新时间行
+                if name == "更新时间":
+                    continue
+
                 if url == "#genre#":
                     genre = name
                 else:
