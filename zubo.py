@@ -4,6 +4,7 @@ import time
 import datetime
 import glob
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 
 # ==================== 新增：读取alias.txt 标准频道别名映射 ====================
