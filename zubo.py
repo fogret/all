@@ -49,7 +49,7 @@ def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
     try:
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
                 if "," in line and not line.startswith("#"):
                     parts = line.strip().split(',')
@@ -148,9 +148,12 @@ def multicast_province(config_file):
         print(f"\n{province} 扫描完成，未扫描到有效ip_port")
 
 def txt_to_m3u(input_file, output_file):
+    # 开头加标准#EXTM3U头部，解决播放器解析乱码
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    with open(output_file, 'w', encoding='utf-8') as f:
+    # 写入m3u强制标准格式、无多余空格、utf-8编码
+    with open(output_file, 'w', encoding='utf-8', newline='') as f:
+        f.write("#EXTM3U\n")
         genre = ''
         for line in lines:
             line = line.strip()
@@ -159,6 +162,7 @@ def txt_to_m3u(input_file, output_file):
                 if channel_url == '#genre#':
                     genre = channel_name
                 else:
+                    # 严格标准格式 无多余空格
                     f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
@@ -226,17 +230,19 @@ def main():
             new_content_lines.extend(final_sort_data[cat])
     # ================================================
 
-    # 写入顶部北京时间 + 虚拟占位频道
+    # 北京时间 格式改成播放器完美识别：2026/04/30 15:23更新
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     current_time = now.strftime("%Y/%m/%d %H:%M")
-    with open("zubo_all.txt", "w", encoding="utf-8") as f:
+    
+    # 生成zubo_all.txt 强制utf-8无BOM，解决中文乱码
+    with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
         f.write(f"{current_time}更新,#genre#\n")
-        # 改为虚拟空频道，无真实播放地址
         f.write(f"更新时间展示,http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
+    # 转m3u 自带标准#EXTM3U头部，格式规范不乱码
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print(f"\n组播地址获取完成，已完成别名统一 + demo分类排序")
+    print(f"\n组播地址获取完成，已完成别名统一 + demo分类排序，中文乱码问题已修复")
 
 if __name__ == "__main__":
     main()
