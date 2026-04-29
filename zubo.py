@@ -1,6 +1,11 @@
 import os
 import time
 import requests
+import aiohttp
+import asyncio
+
+# 并发数 自己随便改 越大越快
+CONCURRENCY = 120
 
 # ============================
 # 读取 alias.txt（统一频道名）
@@ -11,9 +16,10 @@ def load_alias(alias_file):
         with open(alias_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if ',' in line:
-                    old, new = line.split(',', 1)
-                    alias_map[old.strip()] = new.strip()
+                if not line or ',' not in line:
+                    continue
+                old, new = line.split(',', 1)
+                alias_map[old.strip()] = new.strip()
     return alias_map
 
 
@@ -21,8 +27,8 @@ def load_alias(alias_file):
 # 读取 demo.txt（分类 + 顺序）
 # ============================
 def load_demo(demo_file):
-    categories = {}          # {分类名: [频道顺序列表]}
-    category_order = []      # 分类顺序
+    categories = {}
+    category_order = []
 
     current_category = None
 
@@ -33,7 +39,6 @@ def load_demo(demo_file):
             if not line:
                 continue
 
-            # 分类行
             if line.endswith(",#genre#"):
                 category = line.replace(",#genre#", "").strip()
                 current_category = category
@@ -41,7 +46,6 @@ def load_demo(demo_file):
                 categories[current_category] = []
                 continue
 
-            # 分类内频道
             if current_category:
                 categories[current_category].append(line)
 
@@ -49,24 +53,37 @@ def load_demo(demo_file):
 
 
 # ============================
-# URL测速（越快越前）
+# 异步单个链接测速
 # ============================
-def test_speed(url):
+async def async_test_speed(session, url):
     try:
         start = time.time()
-        r = requests.get(url, timeout=1)
+        async with session.head(url, timeout=3) as r:
+            await r.read()
         end = time.time()
-        return end - start
+        return url, end - start
     except:
-        return 9999
+        return url, 9999
 
 
 # ============================
-# 处理 zubo_all.txt → 重新分类 + 排序 + 统一频道名
+# 批量异步并发测速
+# ============================
+async def batch_speed_sort(url_list):
+    connector = aiohttp.TCPConnector(limit=CONCURRENCY)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [async_test_speed(session, u) for u in url_list]
+        res = await asyncio.gather(*tasks)
+        # 按延迟从小到大排序
+        sorted_urls = sorted(res, key=lambda x: x[1])
+        return [i[0] for i in sorted_urls]
+
+
+# ============================
+# 处理 zubo_all.txt
 # ============================
 def process_final_output(input_txt, alias_map, category_order, category_channels):
-    # 读取所有频道
-    all_channels = []   # [(频道名, URL)]
+    all_channels = []
 
     with open(input_txt, 'r', encoding='utf-8') as f:
         for line in f:
@@ -76,27 +93,30 @@ def process_final_output(input_txt, alias_map, category_order, category_channels
                 name = name.strip()
                 url = url.strip()
 
-                # 统一频道名
                 if name in alias_map:
                     name = alias_map[name]
 
                 all_channels.append((name, url))
 
-    # 分类结果
     result = {cat: {} for cat in category_order}
 
-    # 将频道按 demo.txt 分类
+    # 先收集所有需要测速的链接
+    speed_todo = {}
     for cat in category_order:
-        order_list = category_channels[cat]  # 分类内频道顺序
-
+        order_list = category_channels[cat]
         for cname in order_list:
-            # 找到所有匹配的频道
             urls = [url for (name, url) in all_channels if name == cname]
-
             if urls:
-                # 对同频道多个 URL 进行测速排序
-                urls_sorted = sorted(urls, key=lambda u: test_speed(u))
-                result[cat][cname] = urls_sorted
+                speed_todo[cname] = urls
+
+    # 统一批量异步测速排序
+    loop = asyncio.get_event_loop()
+    for cname, urls in speed_todo.items():
+        sorted_urls = loop.run_until_complete(batch_speed_sort(urls))
+        # 放回对应分类
+        for cat in category_order:
+            if cname in category_channels[cat]:
+                result[cat][cname] = sorted_urls
 
     return result
 
@@ -109,12 +129,9 @@ def write_m3u(result, output_file):
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
+        f.write(f'#EXTINF:-1 group-title="{now}更新",IPTV源\n')
+        f.write("http://127.0.0.1/empty\n\n")
 
-        # 顶部更新时间
-        f.write(f'#EXTINF:-1 group-title="更新信息",更新时间：{now}\n')
-        f.write("http://127.0.0.1/update\n\n")
-
-        # 分类顺序输出
         for cat in result:
             for cname, urls in result[cat].items():
                 for url in urls:
@@ -123,15 +140,16 @@ def write_m3u(result, output_file):
 
 
 # ============================
-# 主流程（增强模块）
+# 主流程
 # ============================
 def main():
+    print("开始加载配置...")
     alias_map = load_alias("alias.txt")
     category_order, category_channels = load_demo("demo.txt")
-
+    print("开始极速异步测速排序...")
     result = process_final_output("zubo_all.txt", alias_map, category_order, category_channels)
-
     write_m3u(result, "zubo_all.m3u")
+    print("全部完成！")
 
 
 if __name__ == "__main__":
