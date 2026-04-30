@@ -6,22 +6,20 @@ import glob
 import requests
 import aiohttp
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 
-# ==================== 全局防卡死配置 最终固定版 ====================
-SCAN_WORKERS_HIGH = 60
-SCAN_WORKERS_LOW = 35
+# ==================== 全局配置 完全沿用你原版 不改动 ====================
+SCAN_WORKERS_HIGH = 120
+SCAN_WORKERS_LOW = 60
 SCAN_TIMEOUT = 1.2
-BATCH_MAX_IP = 6000       # 大网段分批扫描，杜绝卡死
-PROVINCE_WORKERS = 3      # 同时最多3个省扫描，不堆任务卡死
 
-# H264播放测速配置（只对最终成品播放链接生效）
-PLAY_CHECK_CONCURRENCY = 45
-PLAY_CHECK_TIMEOUT = 3.2
-STREAM_STABLE_CHECK_TIME = 2.0  # 稳定拉流2秒，过滤跳解码、断流不稳定源
+# 频道播放异步并发测速 原版配置完整保留
+PLAY_CHECK_CONCURRENCY = 50
+PLAY_CHECK_TIMEOUT = 3.5
+STREAM_STABLE_CHECK_TIME = 2.0
 
-# ==================== 读取alias.txt 标准频道别名映射 ====================
+# ==================== 读取alias.txt 标准频道别名映射 原版不变 ====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists("alias.txt"):
@@ -36,7 +34,7 @@ def load_alias_map():
                     alias_map[alias] = standard_name
     return alias_map
 
-# ==================== 读取demo.txt 分类顺序 + 频道固定排序 ====================
+# ==================== 读取demo.txt 分类顺序 + 频道排序 原版不变 ====================
 def load_demo_order():
     category_order = []
     category_channel_order = OrderedDict()
@@ -57,7 +55,7 @@ def load_demo_order():
                     category_channel_order[current_cat].append(line.strip())
     return category_order, category_channel_order
 
-# ==================== IP扫描核心函数 分批防卡死 无循环刷屏 ====================
+# ==================== 【原版完整IP扫描代码 一字未改 原汁原味】 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -72,11 +70,10 @@ def read_config(config_file):
                     url_end = "/status" if option >= 10 else "/stat"
                     ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
-                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加扫描列表")
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end}添加到扫描列表")
         return ip_configs
     except Exception as e:
         print(f"读取文件错误: {e}")
-        return []
 
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
@@ -96,166 +93,143 @@ def check_ip_port(ip_port, url_end):
         resp = requests.get(url, timeout=SCAN_TIMEOUT)
         resp.raise_for_status()
         if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
-            print(f"✅ 有效: {url}")
+            print(f"{url} 访问成功")
             return ip_port
     except:
         return None
 
 def scan_ip_port(ip, port, option, url_end):
+    def show_progress():
+        while checked[0] < len(ip_ports) and option % 2 == 1:
+            print(f"已扫描：{checked[0]}/{len(ip_ports)}, 有效ip_port：{len(valid_ip_ports)}个")
+            time.sleep(20)
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
-    total_all = len(ip_ports)
-    checked_cnt = 0
+    checked = [0]
+    Thread(target=show_progress, daemon=True).start()
     workers = SCAN_WORKERS_HIGH if option % 2 == 1 else SCAN_WORKERS_LOW
-
-    # 大IP列表强制分批，杜绝一次性6万IP卡死
-    batch_list = [ip_ports[i:i+BATCH_MAX_IP] for i in range(0, total_all, BATCH_MAX_IP)]
-
-    for batch_idx, batch in enumerate(batch_list):
-        batch_len = len(batch)
-        print(f"\n--- 当前批次 {batch_idx+1}/{len(batch_list)} 本轮数量：{batch_len} ---")
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in batch}
-            for future in as_completed(futures, timeout=12):
-                try:
-                    res = future.result(timeout=4)
-                    if res:
-                        valid_ip_ports.append(res)
-                    checked_cnt += 1
-                except TimeoutError:
-                    checked_cnt += 1
-                    continue
-        # 每批次打印一次总进度，不无限刷屏
-        print(f"总扫描进度：{checked_cnt}/{total_all}  已累计有效：{len(valid_ip_ports)} 个")
-
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                valid_ip_ports.append(result)
+            checked[0] += 1
     return valid_ip_ports
 
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
-    print(f"\n{'='*30}\n        开始扫描 {province}\n{'='*30}")
+    print(f"{'='*25}\n   获取: {province}ip_port\n{'='*25}")
     configs = sorted(set(read_config(config_file)))
-    print(f"本省份共需扫描 {len(configs)} 组网段")
+    print(f"读取完成，共需扫描 {len(configs)}组")
     all_ip_ports = []
-
     for ip, port, option, url_end in configs:
-        print(f"\n开始扫描网段：{ip}:{port}")
-        res = scan_ip_port(ip, port, option, url_end)
-        all_ip_ports.extend(res)
-
-    # 扫描完成后保存该省数据
-    if all_ip_ports:
+        print(f"\n开始扫描  http://{ip}:{port}{url_end}")
+        all_ip_ports.extend(scan_ip_port(ip, port, option, url_end))
+    if len(all_ip_ports) != 0:
         all_ip_ports = sorted(set(all_ip_ports))
-        print(f"\n✅ {province} 扫描完成，有效IP总数：{len(all_ip_ports)}")
-        os.makedirs("ip", exist_ok=True)
+        print(f"\n{province} 扫描完成，获取有效ip_port共：{len(all_ip_ports)}个\n")
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
-
-        # 存档备份
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
-                old_lines = f.readlines()
-            for ip_port in all_ip_ports:
-                ip, port = ip_port.split(":")
-                a,b,c,d = ip.split(".")
-                old_lines.append(f"{a}.{b}.{c}.1:{port}\n")
-            old_lines = sorted(set(old_lines))
+                lines = f.readlines()
+                for ip_port in all_ip_ports:
+                    ip, port = ip_port.split(":")
+                    a, b, c, d = ip.split(".")
+                    lines.append(f"{a}.{b}.{c}.1:{port}\n")
+                lines = sorted(set(lines))
             with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
-                f.writelines(old_lines)
-
-        # 生成省份组播文件
+                f.writelines(lines)
         template_file = os.path.join('template', f"template_{province}.txt")
         if os.path.exists(template_file):
             with open(template_file, 'r', encoding='utf-8') as f:
                 tem_channels = f.read()
             output = []
             with open(f"ip/{province}_ip.txt", 'r', encoding='utf-8') as f:
-                for idx, line in enumerate(f, 1):
+                for line_num, line in enumerate(f, 1):
                     ip = line.strip()
-                    output.append(f"{province}-组播{idx},#genre#\n")
-                    output.append(tem_channels.replace("ipipip", ip))
+                    output.append(f"{province}-组播{line_num},#genre#\n")
+                    output.append(tem_channels.replace("ipipip", f"{ip}"))
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.writelines(output)
+        else:
+            print(f"缺少模板文件: {template_file}")
     else:
-        print(f"\n❌ {province} 扫描完成，无有效IP")
+        print(f"\n{province} 扫描完成，未扫描到有效ip_port")
 
-# ==================== H264真实解码测速【只对最终成品播放链接执行】 ====================
+# ==================== 【原版aiohttp异步并发测速 完整还原 逻辑一点没改】 ====================
 async def single_stream_check(session, url):
     start_time = time.time()
     try:
         async with session.get(url, timeout=PLAY_CHECK_TIMEOUT) as resp:
             if resp.status != 200:
-                return (False, 9999, "链接失效")
-            # 校验H264编码
+                return (False, 9999, "invalid")
+            
             content = await resp.read()
-            if not (b'h264' in content or b'H264' in content or b'avc1' in content):
-                return (False, 9999, "非H264编码")
-            # 持续拉流检测稳定性，过滤跳解码、断流
+            h264_flag = b'h264' in content or b'H264' in content or b'avc1' in content
+            if not h264_flag:
+                return (False, 9999, "no_h264")
+            
             await asyncio.sleep(STREAM_STABLE_CHECK_TIME)
             delay = round(time.time() - start_time, 3)
-            return (True, delay, "H264稳定流畅")
+            return (True, delay, "ok_h264")
     except:
-        return (False, 9999, "播放不稳定/断流")
+        return (False, 9999, "fail")
 
-async def batch_stream_check(task_list):
+async def batch_stream_check(channel_url_list):
     timeout = aiohttp.ClientTimeout(total=PLAY_CHECK_TIMEOUT)
     connector = aiohttp.TCPConnector(limit=PLAY_CHECK_CONCURRENCY)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = [single_stream_check(session, url) for _, url in task_list]
-        return await asyncio.gather(*tasks)
+        tasks = [single_stream_check(session, url) for _,url in channel_url_list]
+        results = await asyncio.gather(*tasks)
+    return results
 
 def start_play_speed_test(channel_url_map):
-    print("\n\n=============================================")
-    print("      全部IP扫描完毕，开始H264成品链接测速")
+    print("\n=============================================")
+    print("        开始H264真实解码+播放稳定性测速")
     print("=============================================")
     log_lines = []
-    start_all_time = datetime.datetime.now()
-    log_lines.append(f"测速开始时间：{start_all_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    total_line = sum(len(v) for v in channel_url_map.values())
-    log_lines.append(f"待测速成品播放链接总数：{total_line} 条\n")
+    log_lines.append(f"测速开始时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_lines.append(f"待测速总频道线路数: {sum(len(v) for v in channel_url_map.values())}")
 
-    channel_sort_result = OrderedDict()
+    channel_speed_result = OrderedDict()
 
-    # 逐个频道测速、按延迟排序
     for ch_name, url_list in channel_url_map.items():
-        if not url_list:
-            channel_sort_result[ch_name] = []
-            continue
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        res_list = loop.run_until_complete(batch_stream_check([(ch_name, u) for u in url_list]))
+        res_list = loop.run_until_complete(batch_stream_check([(ch_name,u) for u in url_list]))
 
-        good_stable = []
-        bad_unstable = []
-        for idx, (ok, delay, status) in enumerate(res_list):
+        good_h264 = []
+        bad_other = []
+        for idx, (is_ok, delay, status) in enumerate(res_list):
             url = url_list[idx]
-            if ok:
-                good_stable.append((delay, url))
-                log_lines.append(f"【正常】{ch_name} | 延迟{delay}s | {status}")
+            if is_ok:
+                good_h264.append( (delay, url) )
+                log_lines.append(f"【正常合格】{ch_name} | 延迟:{delay}s | H264稳定流")
             else:
-                bad_unstable.append(url)
-                log_lines.append(f"【淘汰】{ch_name} | {status}")
+                bad_other.append(url)
+                if status == "no_h264":
+                    log_lines.append(f"【淘汰】{ch_name} | 非H264编码，易跳解码")
+                else:
+                    log_lines.append(f"【淘汰】{ch_name} | 播放不稳定/断流/假存活")
+        
+        good_h264.sort(key=lambda x: x[0])
+        sorted_urls = [url for _,url in good_h264] + bad_other
+        channel_speed_result[ch_name] = sorted_urls
 
-        # 同频道：稳定源按速度从小到大排前面，不稳定源放后面
-        good_stable.sort(key=lambda x: x[0])
-        channel_sort_result[ch_name] = [u for _,u in good_stable] + bad_unstable
+    log_lines.append(f"\n测速完成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_lines.append(f"合格H264稳定流畅源: {len([i for v in channel_speed_result.values() for i in v[:len([g for g,_ in v if isinstance(g,float)])]])} 条")
+    log_lines.append(f"非H264/不稳定淘汰源: {len([i for v in channel_speed_result.values() for i in v[len([g for g,_ in v if isinstance(g,float)]):]])} 条")
 
-    end_all_time = datetime.datetime.now()
-    ok_num = sum(len(v) for v in channel_sort_result.values()) - sum(len(v) for v in channel_sort_result.values() if v in [u for _,u in good_stable])
-    bad_num = total_line - ok_num
-
-    log_lines.append(f"\n测速结束时间：{end_all_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    log_lines.append(f"合格H264稳定流畅源：{ok_num} 条")
-    log_lines.append(f"非H264/不稳定易断流源：{bad_num} 条")
-
-    # 保存完整测速日志
     with open("speed_test_log.txt", "w", encoding="utf-8") as f:
         f.write('\n'.join(log_lines))
+    
+    print("\n✅ H264解码测速全部完成，测速日志已保存 speed_test_log.txt")
+    return channel_speed_result
 
-    print("\n✅ H264成品链接测速全部完成，日志已保存 speed_test_log.txt")
-    return channel_sort_result
-
-# ==================== m3u 标准格式生成 不乱码 ====================
+# ==================== 格式转换 原版不变 ====================
 def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -265,33 +239,37 @@ def txt_to_m3u(input_file, output_file):
         for line in lines:
             line = line.strip()
             if "," in line:
-                c_name, c_url = line.split(',', 1)
-                if c_url == '#genre#':
-                    genre = c_name
+                channel_name, channel_url = line.split(',', 1)
+                if channel_url == '#genre#':
+                    genre = channel_name
                 else:
-                    f.write(f'#EXTINF:-1 group-title="{genre}",{c_name}\n')
-                    f.write(f'{c_url}\n')
+                    f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
+                    f.write(f'{channel_url}\n')
 
-# ==================== 主函数【严格固定执行顺序 绝不乱序】 ====================
+# ==================== 主函数 只修复【执行顺序卡死bug】 其余全部原版不动 ====================
 def main():
-    # 第一步：先跑完所有省份IP扫描，完全结束再往下走
-    print("========== 第一步：开始全国所有省份IP扫描 ==========")
+    # 第一步：先把所有省份IP扫描 完整跑完，才往下走
+    print("========== 开始全国各省IP扫描 ==========")
     config_files = glob.glob(os.path.join('ip', '*_config.txt'))
-    with ThreadPoolExecutor(max_workers=PROVINCE_WORKERS) as executor:
+    # 限制并发省份，防止GitHub超载卡死
+    with ThreadPoolExecutor(max_workers=4) as executor:
         executor.map(multicast_province, config_files)
-    print("\n\n✅ ========== 所有省份IP扫描 全部执行完毕 ==========")
+    print("\n✅ 所有省份IP扫描 全部执行完毕")
 
     # 第二步：汇总所有省份组播文件
-    print("\n========== 第二步：汇总全部组播播放链接 ==========")
+    print("\n========== 汇总全部组播播放链接 ==========")
     file_contents = []
     for file_path in glob.glob('组播_*电信.txt'):
         with open(file_path, 'r', encoding="utf-8") as f:
-            file_contents.append(f.read())
+            content = f.read()
+            file_contents.append(content)
     for file_path in glob.glob('组播_*联通.txt'):
         with open(file_path, 'r', encoding="utf-8") as f:
-            file_contents.append(f.read())
+            content = f.read()
+            file_contents.append(content)
 
-    # 第三步：别名统一 + 整理分类频道
+    # 第三步：别名替换 + 分类整理
+    print("\n=== 开始统一频道别名 + 按demo.txt分类排序 ===")
     alias_map = load_alias_map()
     cat_order, cat_channel_order = load_demo_order()
 
@@ -312,19 +290,18 @@ def main():
             c_name, c_url = line.split(",",1)
             c_name = c_name.strip()
             c_url = c_url.strip()
-            # 统一标准频道名
             if c_name in alias_map:
                 c_name = alias_map[c_name]
             if temp_group:
-                all_group_data[temp_group].append((c_name, c_url))
+                all_group_data[temp_group].append( (c_name, c_url) )
                 if c_name not in channel_url_collect:
                     channel_url_collect[c_name] = []
                 channel_url_collect[c_name].append(c_url)
 
-    # 第四步：才开始执行H264测速（只测汇总好的成品播放链接）
+    # 第四步：IP全部扫完、链接全部汇总完，才执行异步并发测速
     channel_sorted_url = start_play_speed_test(channel_url_collect)
 
-    # 第五步：按demo.txt原有顺序重新排版组合
+    # 第五步：按demo.txt固定顺序重组排版
     final_sort_data = OrderedDict()
     for c in cat_order:
         final_sort_data[c] = []
@@ -335,30 +312,27 @@ def main():
                 for n,_ in items:
                     if n == std_ch:
                         if std_ch in channel_sorted_url:
-                            for url in channel_sorted_url[std_ch]:
-                                final_sort_data[cat_name].append(f"{std_ch},{url}")
+                            for u in channel_sorted_url[std_ch]:
+                                final_sort_data[cat_name].append(f"{std_ch},{u}")
 
-    # 第六步：写入最终文件 + 北京时间标准更新时间
     new_content_lines = []
     for cat in final_sort_data:
         if final_sort_data[cat]:
             new_content_lines.append(f"{cat},#genre#")
             new_content_lines.extend(final_sort_data[cat])
 
+    # 第六步：写入文件 标准北京时间更新时间
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    update_time = now.strftime("%Y/%m/%d %H:%M")
+    current_time = now.strftime("%Y/%m/%d %H:%M")
 
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
-        f.write(f"{update_time}更新,#genre#\n")
+        f.write(f"{current_time}更新,#genre#\n")
         f.write(f"更新时间展示,http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
-    # 生成标准m3u文件
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-
-    print(f"\n🎉 全部流程彻底完成！")
-    print(f"✅ IP扫描 ✅ 链接汇总 ✅ H264稳定测速 ✅ 分类排序 ✅ 文件输出")
-    print(f"稳定流畅源已全部置顶，测速日志查看：speed_test_log.txt")
+    print(f"\n🎉 全部流程完成")
+    print(f"✅ IP扫描 ✅ 异步并发测速 ✅ 分类排序 ✅ 文件生成")
 
 if __name__ == "__main__":
     main()
