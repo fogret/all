@@ -1,5 +1,5 @@
 name: zubo
- 
+
 on:
   schedule:
     - cron: '0 11 */3 * *'   # 北京时间 19:00
@@ -13,9 +13,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,9 +27,8 @@ jobs:
           pip install --upgrade pip
           pip install requests aiohttp
 
-      - name: Run
+      - name: Run script
         run: |
-          cd $GITHUB_WORKSPACE
           python zubo.py
 
       - name: Commit output files
