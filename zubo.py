@@ -6,14 +6,16 @@ import glob
 import requests
 import aiohttp
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from collections import OrderedDict
 
-# ==================== 全局配置 可直接自行修改 ====================
-# IP扫描提速配置
-SCAN_WORKERS_HIGH = 120
-SCAN_WORKERS_LOW = 60
+# ==================== 全局配置 防卡死优化 ====================
+# 降低并发，适配GitHub，彻底解决扫描卡死不动
+SCAN_WORKERS_HIGH = 70
+SCAN_WORKERS_LOW = 40
 SCAN_TIMEOUT = 1.2
+# 单批次最大扫描IP数量，防止一次性6万IP撑爆线程池
+BATCH_MAX_IP = 8000
 
 # 频道播放测速配置（真实H264解码测速）
 PLAY_CHECK_CONCURRENCY = 50
@@ -57,7 +59,7 @@ def load_demo_order():
                     category_channel_order[current_cat].append(line.strip())
     return category_order, category_channel_order
 
-# ==================== 原有IP扫描函数 完全不变 只保留提速优化 ====================
+# ==================== 原有IP扫描函数 增加分批防卡死 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -110,13 +112,22 @@ def scan_ip_port(ip, port, option, url_end):
     checked = [0]
     Thread(target=show_progress, daemon=True).start()
     workers = SCAN_WORKERS_HIGH if option % 2 == 1 else SCAN_WORKERS_LOW
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                valid_ip_ports.append(result)
-            checked[0] += 1
+
+    # 超大IP列表 分批切割，不一次性全部塞入，解决卡死
+    batch_list = [ip_ports[i:i+BATCH_MAX_IP] for i in range(0, len(ip_ports), BATCH_MAX_IP)]
+
+    for batch in batch_list:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in batch}
+            for future in as_completed(futures, timeout=15):
+                try:
+                    result = future.result(timeout=5)
+                    if result:
+                        valid_ip_ports.append(result)
+                    checked[0] += 1
+                except TimeoutError:
+                    checked[0] += 1
+                    continue
     return valid_ip_ports
 
 def multicast_province(config_file):
@@ -254,11 +265,11 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ==================== 主函数 ====================
+# ==================== 主函数 多省并行降为3，不堆积卡死 ====================
 def main():
-    # 1. 多省并行IP扫描 提速版
+    # 1. 多省并行扫描 降低并发，防卡死
     config_files = glob.glob(os.path.join('ip', '*_config.txt'))
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         executor.map(multicast_province, config_files)
 
     # 2. 汇总所有省份组播文件
