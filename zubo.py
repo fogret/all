@@ -7,11 +7,6 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 
-# ==================== 测速配置（原shell提取逻辑，无改动） ====================
-SAVE_TOP_NUM = 10       # 每个频道保留最快前10条
-CURL_CONNECT_TIMEOUT = 5
-CURL_MAX_TIMEOUT = 40
-
 # ==================== 新增：读取alias.txt 标准频道别名映射 ====================
 def load_alias_map():
     alias_map = {}
@@ -171,41 +166,6 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ==================== 原生shell提取 测速核心函数（纯原逻辑，适配汇总后使用） ====================
-def speed_test_all_channels(channel_list):
-    # channel_list 格式：[(频道名, 播放链接), ...]
-    chan_speed_data = {}
-    # 先按频道分组
-    for ch_name, ch_url in channel_list:
-        if ch_name not in chan_speed_data:
-            chan_speed_data[ch_name] = []
-        chan_speed_data[ch_name].append(ch_url)
-
-    # 逐个频道测速
-    result_final = []
-    for ch_name, url_list in chan_speed_data.items():
-        print(f"\n开始测速：{ch_name}  共{len(url_list)}条链接")
-        one_chan_res = []
-        for url in url_list:
-            try:
-                # 完全沿用你shell里curl拉流测速原逻辑
-                res = requests.get(url, timeout=CURL_MAX_TIMEOUT,
-                                   allow_redirects=True, stream=True)
-                speed_kb = round(len(res.content) / 1024, 2)
-                one_chan_res.append( {"url":url, "speed":speed_kb} )
-            except:
-                one_chan_res.append( {"url":url, "speed":0.0} )
-
-        # 同频道按速度 从快到慢 排序
-        one_chan_res.sort(key=lambda x: x["speed"], reverse=True)
-        # 只保留最快前10条
-        top_res = one_chan_res[:SAVE_TOP_NUM]
-        # 重新存入最终列表
-        for item in top_res:
-            result_final.append( (ch_name, item["url"]) )
-        print(f"{ch_name} 测速完成，保留最优{len(top_res)}条")
-    return result_final
-
 # ==================== 主函数 ====================
 def main():
     # 1. 原有：逐省扫描全部不变
@@ -223,7 +183,7 @@ def main():
             content = f.read()
             file_contents.append(content)
 
-    # ========== 原有：统一别名 + 按demo分类排序 完全不变 ==========
+    # ========== 新增：统一别名 + 按demo分类排序 ==========
     print("\n=== 开始统一频道别名 + 按demo.txt分类排序 ===")
     alias_map = load_alias_map()
     cat_order, cat_channel_order = load_demo_order()
@@ -261,49 +221,28 @@ def main():
             for g_name, items in all_group_data.items():
                 for n,u in items:
                     if n == std_ch:
-                        final_sort_data[cat_name].append( (n,u) )
+                        final_sort_data[cat_name].append( f"{n},{u}" )
 
-    # ==================== 【重点：全部汇总排序完成后，再执行测速】 ====================
-    print("\n===== 全部汇总、分类、别名处理完毕，开始全局拉流测速 =====")
-    # 取出所有频道+链接 进行测速
-    test_input_list = []
-    for cat_key, item_list in final_sort_data.items():
-        for ch_n, ch_u in item_list:
-            test_input_list.append( (ch_n, ch_u) )
-
-    # 执行原生提取的测速代码
-    after_speed_list = speed_test_all_channels(test_input_list)
-
-    # 测速完成后，重新按demo分类顺序整理回去
-    speed_final_group = OrderedDict()
-    for c in cat_order:
-        speed_final_group[c] = []
-    for ch_n, ch_u in after_speed_list:
-        for cat_name, ch_list in cat_channel_order.items():
-            if ch_n in ch_list:
-                speed_final_group[cat_name].append(f"{ch_n},{ch_u}")
-
-    # 拼装最终输出文本
     new_content_lines = []
-    for cat in speed_final_group:
-        if speed_final_group[cat]:
+    for cat in final_sort_data:
+        if final_sort_data[cat]:
             new_content_lines.append(f"{cat},#genre#")
-            new_content_lines.extend(speed_final_group[cat])
+            new_content_lines.extend(final_sort_data[cat])
     # ================================================
 
-    # 北京时间 格式：2026/04/30 15:23更新
+    # 北京时间 格式改成播放器完美识别：2026/04/30 15:23更新
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     current_time = now.strftime("%Y/%m/%d %H:%M")
     
-    # 生成zubo_all.txt
+    # 生成zubo_all.txt 强制utf-8无BOM，解决中文乱码
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
         f.write(f"{current_time}更新,#genre#\n")
         f.write(f"更新时间展示,http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
-    # 转m3u
+    # 转m3u 自带标准#EXTM3U头部，格式规范不乱码
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print(f"\n全部完成：扫描汇总+别名统一+demo排序+全局拉流测速+保留各频道前10最优线路")
+    print(f"\n组播地址获取完成，已完成别名统一 + demo分类排序，中文乱码问题已修复")
 
 if __name__ == "__main__":
     main()
