@@ -37,7 +37,7 @@ def load_demo_order():
                 if not line:
                     continue
                 if line.endswith(",#genre#"):
-                    current_cat = line.replace(",#genre#","").strip()
+                    current_cat = line.replace(",#genre#", "").strip()
                     category_order.append(current_cat)
                     category_channel_order[current_cat] = []
                     continue
@@ -50,16 +50,17 @@ def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
     try:
-        with open(config_file, 'r', encoding            for line_num, line in enumerate(f, 1):
+        with open(config_file, 'r', encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
                 if "," in line and not line.startswith("#"):
                     parts = line.strip().split(',')
                     ip_part, port = parts[0].strip().split(':')
                     a, b, c, d = ip_part.split('.')
-                    option = int(parts[1]) 
+                    option = int(parts[1])
                     url_end = "/status" if option >= 10 else "/stat"
                     ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
-                    print(f"第{line_num}行：http://{ip}:{port}{url_end}添加到扫描列表")
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
         return ip_configs
     except Exception as e:
         print(f"读取文件错误: {e}")
@@ -118,18 +119,21 @@ def scan_ip_port(ip, port, option, url_end):
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
-    print(f"{'='*25}\n   获取: {province}ip_port\n{'='*25}")
+    print(f"{'='*25}\n   获取: {province} ip_port\n{'='*25}")
     configs = sorted(set(read_config(config_file)))
-    print(f"读取完成，共需扫描 {len(configs)}组")
+    print(f"读取完成，共需扫描 {len(configs)} 组")
     all_ip_ports = []
     for ip, port, option, url_end in configs:
-        print(f"\n开始扫描  http://{ip}:{port}{url_end}")
+        print(f"\n开始扫描 http://{ip}:{port}{url_end}")
         all_ip_ports.extend(scan_ip_port(ip, port, option, url_end))
+
     if len(all_ip_ports) != 0:
         all_ip_ports = sorted(set(all_ip_ports))
-        print(f"\n{province} 扫描完成，获取有效ip_port共：{len(all_ip_ports)}个\n{all_ip_ports}\n")
+        print(f"\n{province} 扫描完成，有效 ip_port 共：{len(all_ip_ports)} 个\n{all_ip_ports}\n")
+
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
+
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -139,12 +143,13 @@ def multicast_province(config_file):
                     lines.append(f"{a}.{b}.{c}.1:{port}\n")
                 lines = sorted(set(lines))
             with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
-                f.writelines(lines)    
+                f.writelines(lines)
+
         template_file = os.path.join('template', f"template_{province}.txt")
         if os.path.exists(template_file):
             with open(template_file, 'r', encoding='utf-8') as f:
                 tem_channels = f.read()
-            output = [] 
+            output = []
             with open(f"ip/{province}_ip.txt", 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
                     ip = line.strip()
@@ -155,7 +160,7 @@ def multicast_province(config_file):
         else:
             print(f"缺少模板文件: {template_file}")
     else:
-        print(f"\n{province} 扫描完成，未扫描到有效ip_port")
+        print(f"\n{province} 扫描完成，未扫描到有效 ip_port")
 
 def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
@@ -186,7 +191,7 @@ def main():
         with open(file_path, 'r', encoding="utf-8") as f:
             file_contents.append(f.read())
 
-    print("\n=== 开始统一频道别名 + 按demo.txt分类排序 ===")
+    print("\n=== 开始统一频道别名 + 按 demo.txt 分类排序 ===")
     alias_map = load_alias_map()
     cat_order, cat_channel_order = load_demo_order()
 
@@ -199,11 +204,11 @@ def main():
         if not line:
             continue
         if line.endswith(",#genre#"):
-            temp_group = line.replace(",#genre#","")
+            temp_group = line.replace(",#genre#", "")
             if temp_group not in all_group_data:
                 all_group_data[temp_group] = []
         elif "," in line:
-            c_name, c_url = line.split(",",1)
+            c_name, c_url = line.split(",", 1)
             c_name = alias_map.get(c_name.strip(), c_name.strip())
             if temp_group:
                 all_group_data[temp_group].append((c_name, c_url.strip()))
@@ -215,7 +220,7 @@ def main():
     for cat_name, ch_list in cat_channel_order.items():
         for std_ch in ch_list:
             for g_name, items in all_group_data.items():
-                for n,u in items:
+                for n, u in items:
                     if n == std_ch:
                         final_sort_data[cat_name].append(f"{n},{u}")
 
@@ -230,11 +235,11 @@ def main():
 
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
         f.write(f"{current_time}更新,#genre#\n")
-        f.write(f"更新时间展示,http://127.0.0.1/null\n")
+        f.write("更新时间展示,http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print(f"\n组播地址获取完成，已完成别名统一 + demo分类排序，中文乱码问题已修复")
+    print("\n组播地址获取完成，已完成别名统一 + demo 分类排序，中文乱码问题已修复")
 
 if __name__ == "__main__":
     main()
