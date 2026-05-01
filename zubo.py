@@ -152,20 +152,25 @@ def multicast_province(config_file):
         all_ip_ports = sorted(set(all_ip_ports))
         print(f"\n{province} 扫描完成，有效 ip_port 共：{len(all_ip_ports)} 个\n{all_ip_ports}\n")
 
+        # 写入当前扫描结果
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
 
+        # ==================== 修复后的存档合并 ====================
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                for ip_port in all_ip_ports:
-                    ip, port = ip_port.split(":")
-                    a, b, c, d = ip.split(".")
-                    lines.append(f"{a}.{b}.{c}.1:{port}\n")
-                lines = sorted(set(lines))
-            with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
-                f.writelines(lines)
+                lines = [line.strip() for line in f if line.strip()]
 
+            # 直接合并真实扫描到的 IP，不修改结构
+            for ip_port in all_ip_ports:
+                lines.append(ip_port)
+
+            lines = sorted(set(lines))
+
+            with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+
+        # ==================== 模板生成 ====================
         template_file = os.path.join('template', f"template_{province}.txt")
         if os.path.exists(template_file):
             with open(template_file, 'r', encoding='utf-8') as f:
