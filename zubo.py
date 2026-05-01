@@ -6,8 +6,6 @@ import glob
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
-import aiohttp
-import asyncio
 
 # ==================== 读取 alias.txt ====================
 def load_alias_map():
@@ -50,7 +48,7 @@ def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
     try:
-        with open(config_file, 'r', encoding="utf-8") as f:
+        with open(config_file, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 if "," in line and not line.startswith("#"):
                     parts = line.strip().split(',')
@@ -60,7 +58,7 @@ def read_config(config_file):
                     url_end = "/status" if option >= 10 else "/stat"
                     ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
-                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end}添加到扫描列表")
         return ip_configs
     except Exception as e:
         print(f"读取文件错误: {e}")
@@ -78,122 +76,106 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ==================== 修复后的扫描逻辑 ====================
-async def aio_check(session, ip_port, url_end):
-    url = f"http://{ip_port}{url_end}"
-    timeouts = [2, 4, 4]
+# ==================== 检测 URL ====================
+def check_ip_port(ip_port, url_end):
+    try:
+        url = f"http://{ip_port}{url_end}"
+        resp = requests.get(url, timeout=2)
+        resp.raise_for_status()
+        if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
+            print(f"{url} 访问成功")
+            return ip_port
+    except:
+        return None
 
-    for attempt in range(3):
-        try:
-            async with session.get(url, timeout=timeouts[attempt]) as resp:
-                text = await resp.text(errors="ignore")
-
-                if ("Multi stream daemon" in text) or ("udpxy status" in text) or ("udpxy" in text):
-                    print(f"[OK] {ip_port}（第 {attempt+1} 次）")
-                    return ip_port
-
-        except asyncio.TimeoutError:
-            print(f"[超时] {ip_port}（第 {attempt+1} 次）")
-        except:
-            print(f"[失败] {ip_port}（第 {attempt+1} 次）")
-
-    return None
-
-# ==================== 异步扫描 ====================
-async def aio_scan(ip_ports, url_end, max_conn=200):
-    connector = aiohttp.TCPConnector(limit=max_conn)
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [aio_check(session, ip_port, url_end) for ip_port in ip_ports]
-        results = []
-
-        count = 0
-        total = len(tasks)
-
-        for future in asyncio.as_completed(tasks):
-            r = await future
-            count += 1
-
-            if count % 50 == 0:
-                print(f"进度：{count}/{total}")
-
-            if r:
-                results.append(r)
-
-        return results
-
-# ==================== 扫描入口 ====================
+# ==================== 多线程扫描 ====================
 def scan_ip_port(ip, port, option, url_end):
+    def show_progress():
+        while checked[0] < len(ip_ports) and option % 2 == 1:
+            print(f"已扫描：{checked[0]}/{len(ip_ports)}, 有效ip_port：{len(valid_ip_ports)}个")
+            time.sleep(30)
+
+    valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
-    print(f"开始异步扫描，共 {len(ip_ports)} 个地址...")
+    checked = [0]
 
-    max_conn = 200
+    Thread(target=show_progress, daemon=True).start()
 
-    start = time.time()
-    results = asyncio.run(aio_scan(ip_ports, url_end, max_conn=max_conn))
-    end = time.time()
+    with ThreadPoolExecutor(max_workers=300 if option % 2 == 1 else 100) as executor:
+        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                valid_ip_ports.append(result)
+            checked[0] += 1
 
-    print(f"扫描完成，用时 {int(end - start)} 秒，有效 {len(results)} 个")
-    return results
+    return valid_ip_ports
 
 # ==================== 每省扫描逻辑 ====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
-    print(f"{'='*25}\n   获取: {province} ip_port\n{'='*25}")
+    print(f"{'='*25}\n   获取: {province}ip_port\n{'='*25}")
+
     configs = sorted(set(read_config(config_file)))
-    print(f"读取完成，共需扫描 {len(configs)} 组")
+    print(f"读取完成，共需扫描 {len(configs)}组")
+
     all_ip_ports = []
     for ip, port, option, url_end in configs:
-        print(f"\n开始扫描 http://{ip}:{port}{url_end}")
+        print(f"\n开始扫描  http://{ip}:{port}{url_end}")
         all_ip_ports.extend(scan_ip_port(ip, port, option, url_end))
 
     if len(all_ip_ports) != 0:
         all_ip_ports = sorted(set(all_ip_ports))
-        print(f"\n{province} 扫描完成，有效 ip_port 共：{len(all_ip_ports)} 个\n{all_ip_ports}\n")
+        print(f"\n{province} 扫描完成，获取有效ip_port共：{len(all_ip_ports)}个\n{all_ip_ports}\n")
 
         # 写入当前扫描结果
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
 
-        # ==================== 修复后的存档合并 ====================
+        # ==================== 原代码存档逻辑（保留） ====================
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
-                lines = [line.strip() for line in f if line.strip()]
+                lines = f.readlines()
 
-            # 直接合并真实扫描到的 IP，不修改结构
             for ip_port in all_ip_ports:
-                lines.append(ip_port)
+                ip, port = ip_port.split(":")
+                a, b, c, d = ip.split(".")
+                lines.append(f"{a}.{b}.{c}.1:{port}\n")
 
             lines = sorted(set(lines))
 
             with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
-                f.write('\n'.join(lines) + '\n')
+                f.writelines(lines)
 
         # ==================== 模板生成 ====================
         template_file = os.path.join('template', f"template_{province}.txt")
         if os.path.exists(template_file):
             with open(template_file, 'r', encoding='utf-8') as f:
                 tem_channels = f.read()
+
             output = []
             with open(f"ip/{province}_ip.txt", 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
                     ip = line.strip()
                     output.append(f"{province}-组播{line_num},#genre#\n")
                     output.append(tem_channels.replace("ipipip", f"{ip}"))
+
             with open(f"组播_{province}.txt", 'w', encoding='utf-8') as f:
                 f.writelines(output)
+
         else:
             print(f"缺少模板文件: {template_file}")
+
     else:
-        print(f"\n{province} 扫描完成，未扫描到有效 ip_port")
+        print(f"\n{province} 扫描完成，未扫描到有效ip_port")
 
 # ==================== TXT 转 M3U ====================
 def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    with open(output_file, 'w', encoding='utf-8', newline='') as f:
-        f.write("#EXTM3U\n")
+
+    with open(output_file, 'w', encoding='utf-8') as f:
         genre = ''
         for line in lines:
             line = line.strip()
@@ -214,62 +196,24 @@ def main():
     for file_path in glob.glob('组播_*电信.txt'):
         with open(file_path, 'r', encoding="utf-8") as f:
             file_contents.append(f.read())
+
     for file_path in glob.glob('组播_*联通.txt'):
         with open(file_path, 'r', encoding="utf-8") as f:
             file_contents.append(f.read())
 
-    print("\n=== 开始统一频道别名 + 按 demo.txt 分类排序 ===")
-    alias_map = load_alias_map()
-    cat_order, cat_channel_order = load_demo_order()
-
-    all_group_data = {}
-    temp_group = ""
-
-    full_text = '\n'.join(file_contents)
-    for line in full_text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.endswith(",#genre#"):
-            temp_group = line.replace(",#genre#", "")
-            if temp_group not in all_group_data:
-                all_group_data[temp_group] = []
-        elif "," in line:
-            c_name, c_url = line.split(",", 1)
-            c_name = alias_map.get(c_name.strip(), c_name.strip())
-            if temp_group:
-                all_group_data[temp_group].append((c_name, c_url.strip()))
-
-    final_sort_data = OrderedDict()
-    for c in cat_order:
-        final_sort_data[c] = []
-
-    for cat_name, ch_list in cat_channel_order.items():
-        for std_ch in ch_list:
-            for g_name, items in all_group_data.items():
-                for n, u in items:
-                    if n == std_ch:
-                        final_sort_data[cat_name].append(f"{n},{u}")
-
-    new_content_lines = []
-    for cat in final_sort_data:
-        if final_sort_data[cat]:
-            new_content_lines.append(f"{cat},#genre#")
-            new_content_lines.extend(final_sort_data[cat])
-
     # ==================== 更新时间（中文格式） ====================
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    date_part = now.strftime("%m月%d日")   # 05月01日
-    time_part = now.strftime("%H:%M")      # 14:05
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    date_part = now.strftime("%m月%d日")
+    time_part = now.strftime("%H:%M")
 
-    # ==================== 你要的最终格式 ====================
-    with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
+    # ==================== 最终输出 ====================
+    with open("zubo_all.txt", "w", encoding="utf-8") as f:
         f.write("更新时间,#genre#\n")
         f.write(f"{date_part} {time_part},http://127.0.0.1/null\n")
-        f.write('\n'.join(new_content_lines))
+        f.write('\n'.join(file_contents))
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n组播地址获取完成，已完成别名统一 + demo 分类排序")
+    print("组播地址获取完成")
 
 if __name__ == "__main__":
     main()
