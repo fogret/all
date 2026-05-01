@@ -156,19 +156,20 @@ def multicast_province(config_file):
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
 
-        # ==================== 修复后的存档合并 ====================
+        # ==================== 存档合并：改回原逻辑 ====================
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
-                lines = [line.strip() for line in f if line.strip()]
+                lines = f.readlines()
 
-            # 直接合并真实扫描到的 IP，不修改结构
             for ip_port in all_ip_ports:
-                lines.append(ip_port)
+                ip, port = ip_port.split(":")
+                a, b, c, d = ip.split(".")
+                lines.append(f"{a}.{b}.{c}.1:{port}\n")
 
             lines = sorted(set(lines))
 
             with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
-                f.write('\n'.join(lines) + '\n')
+                f.writelines(lines)
 
         # ==================== 模板生成 ====================
         template_file = os.path.join('template', f"template_{province}.txt")
@@ -257,12 +258,12 @@ def main():
             new_content_lines.append(f"{cat},#genre#")
             new_content_lines.extend(final_sort_data[cat])
 
-    # ==================== 更新时间（中文格式） ====================
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    # ==================== 更新时间（中文格式，修正 UTC 用法） ====================
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     date_part = now.strftime("%m月%d日")   # 05月01日
     time_part = now.strftime("%H:%M")      # 14:05
 
-    # ==================== 你要的最终格式 ====================
+    # ==================== 最终格式 ====================
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
         f.write("更新时间,#genre#\n")
         f.write(f"{date_part} {time_part},http://127.0.0.1/null\n")
