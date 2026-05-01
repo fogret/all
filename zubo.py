@@ -7,7 +7,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 
-# ==================== 读取 alias.txt ====================
+# ==================== 读取 alias.txt（修改版逻辑） ====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists("alias.txt"):
@@ -22,7 +22,7 @@ def load_alias_map():
                     alias_map[alias] = standard_name
     return alias_map
 
-# ==================== 读取 demo.txt ====================
+# ==================== 读取 demo.txt（修改版逻辑） ====================
 def load_demo_order():
     category_order = []
     category_channel_order = OrderedDict()
@@ -43,7 +43,7 @@ def load_demo_order():
                     category_channel_order[current_cat].append(line.strip())
     return category_order, category_channel_order
 
-# ==================== 原有配置读取 ====================
+# ==================== 原代码：读取 config（保持原逻辑） ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -63,7 +63,7 @@ def read_config(config_file):
     except Exception as e:
         print(f"读取文件错误: {e}")
 
-# ==================== 生成扫描 IP 列表 ====================
+# ==================== 原代码：生成扫描 IP（保持原逻辑） ====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -76,7 +76,7 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ==================== 检测 URL ====================
+# ==================== 原代码：检测 URL（保持原逻辑） ====================
 def check_ip_port(ip_port, url_end):
     try:
         url = f"http://{ip_port}{url_end}"
@@ -88,7 +88,7 @@ def check_ip_port(ip_port, url_end):
     except:
         return None
 
-# ==================== 多线程扫描 ====================
+# ==================== 原代码：多线程扫描（保持原逻辑） ====================
 def scan_ip_port(ip, port, option, url_end):
     def show_progress():
         while checked[0] < len(ip_ports) and option % 2 == 1:
@@ -111,7 +111,7 @@ def scan_ip_port(ip, port, option, url_end):
 
     return valid_ip_ports
 
-# ==================== 每省扫描逻辑 ====================
+# ==================== 原代码：每省扫描（保持原逻辑） ====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
@@ -129,11 +129,11 @@ def multicast_province(config_file):
         all_ip_ports = sorted(set(all_ip_ports))
         print(f"\n{province} 扫描完成，获取有效ip_port共：{len(all_ip_ports)}个\n{all_ip_ports}\n")
 
-        # 写入当前扫描结果
+        # 原代码：写入当前扫描结果
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
 
-        # ==================== 原代码存档逻辑（保留） ====================
+        # 原代码：存档逻辑（保持原样）
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -148,7 +148,7 @@ def multicast_province(config_file):
             with open(f"ip/存档_{province}_ip.txt", 'w', encoding='utf-8') as f:
                 f.writelines(lines)
 
-        # ==================== 模板生成 ====================
+        # 原代码：模板生成（保持原样）
         template_file = os.path.join('template', f"template_{province}.txt")
         if os.path.exists(template_file):
             with open(template_file, 'r', encoding='utf-8') as f:
@@ -170,7 +170,7 @@ def multicast_province(config_file):
     else:
         print(f"\n{province} 扫描完成，未扫描到有效ip_port")
 
-# ==================== TXT 转 M3U ====================
+# ==================== TXT 转 M3U（保持原逻辑） ====================
 def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -187,11 +187,13 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ==================== 主函数 ====================
+# ==================== 主函数（修改版汇总 + 更新时间分类） ====================
 def main():
+    # 原代码：扫描所有省份
     for config_file in glob.glob(os.path.join('ip', '*_config.txt')):
         multicast_province(config_file)
 
+    # 原代码：读取所有组播文件
     file_contents = []
     for file_path in glob.glob('组播_*电信.txt'):
         with open(file_path, 'r', encoding="utf-8") as f:
@@ -201,16 +203,55 @@ def main():
         with open(file_path, 'r', encoding="utf-8") as f:
             file_contents.append(f.read())
 
-    # ==================== 更新时间（中文格式） ====================
+    # 修改版：alias + demo 分类排序
+    alias_map = load_alias_map()
+    cat_order, cat_channel_order = load_demo_order()
+
+    all_group_data = {}
+    temp_group = ""
+
+    full_text = '\n'.join(file_contents)
+    for line in full_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.endswith(",#genre#"):
+            temp_group = line.replace(",#genre#", "")
+            if temp_group not in all_group_data:
+                all_group_data[temp_group] = []
+        elif "," in line:
+            c_name, c_url = line.split(",", 1)
+            c_name = alias_map.get(c_name.strip(), c_name.strip())
+            if temp_group:
+                all_group_data[temp_group].append((c_name, c_url.strip()))
+
+    final_sort_data = OrderedDict()
+    for c in cat_order:
+        final_sort_data[c] = []
+
+    for cat_name, ch_list in cat_channel_order.items():
+        for std_ch in ch_list:
+            for g_name, items in all_group_data.items():
+                for n, u in items:
+                    if n == std_ch:
+                        final_sort_data[cat_name].append(f"{n},{u}")
+
+    new_content_lines = []
+    for cat in final_sort_data:
+        if final_sort_data[cat]:
+            new_content_lines.append(f"{cat},#genre#")
+            new_content_lines.extend(final_sort_data[cat])
+
+    # ==================== 修改点 1：加入“更新时间分类” ====================
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     date_part = now.strftime("%m月%d日")
     time_part = now.strftime("%H:%M")
 
-    # ==================== 最终输出 ====================
+    # ==================== 修改点 2：最终输出格式 ====================
     with open("zubo_all.txt", "w", encoding="utf-8") as f:
         f.write("更新时间,#genre#\n")
         f.write(f"{date_part} {time_part},http://127.0.0.1/null\n")
-        f.write('\n'.join(file_contents))
+        f.write('\n'.join(new_content_lines))
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
     print("组播地址获取完成")
