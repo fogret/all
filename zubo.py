@@ -78,23 +78,24 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ==================== 真实转发检测 + 三次重试 + 智能判断服务器慢 ====================
-async def aio_check(session, ip_port):
-    test_url = f"http://{ip_port}/rtp/239.1.1.1:1234"
-
-    # 三次重试：第一次 2 秒，第二次 4 秒，第三次 4 秒
+# ==================== 修复后的扫描逻辑 ====================
+async def aio_check(session, ip_port, url_end):
+    url = f"http://{ip_port}{url_end}"
     timeouts = [2, 4, 4]
 
     for attempt in range(3):
         try:
-            async with session.get(test_url, timeout=timeouts[attempt]) as resp:
-                if resp.status == 200:
-                    print(f"{test_url} 成功（第 {attempt+1} 次，timeout={timeouts[attempt]} 秒）")
+            async with session.get(url, timeout=timeouts[attempt]) as resp:
+                text = await resp.text(errors="ignore")
+
+                if ("Multi stream daemon" in text) or ("udpxy status" in text) or ("udpxy" in text):
+                    print(f"[OK] {ip_port}（第 {attempt+1} 次）")
                     return ip_port
+
         except asyncio.TimeoutError:
-            print(f"{test_url} 超时（第 {attempt+1} 次，timeout={timeouts[attempt]} 秒）")
+            print(f"[超时] {ip_port}（第 {attempt+1} 次）")
         except:
-            print(f"{test_url} 失败（第 {attempt+1} 次）")
+            print(f"[失败] {ip_port}（第 {attempt+1} 次）")
 
     return None
 
@@ -103,11 +104,19 @@ async def aio_scan(ip_ports, url_end, max_conn=200):
     connector = aiohttp.TCPConnector(limit=max_conn)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [aio_check(session, ip_port) for ip_port in ip_ports]
+        tasks = [aio_check(session, ip_port, url_end) for ip_port in ip_ports]
         results = []
+
+        count = 0
+        total = len(tasks)
 
         for future in asyncio.as_completed(tasks):
             r = await future
+            count += 1
+
+            if count % 50 == 0:
+                print(f"进度：{count}/{total}")
+
             if r:
                 results.append(r)
 
@@ -118,7 +127,7 @@ def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
     print(f"开始异步扫描，共 {len(ip_ports)} 个地址...")
 
-    max_conn = 200  # 固定并发 200
+    max_conn = 200
 
     start = time.time()
     results = asyncio.run(aio_scan(ip_ports, url_end, max_conn=max_conn))
@@ -243,14 +252,15 @@ def main():
             new_content_lines.append(f"{cat},#genre#")
             new_content_lines.extend(final_sort_data[cat])
 
+    # ==================== 更新时间（中文格式） ====================
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    date_part = now.strftime("%Y/%m/%d")
-    time_part = now.strftime("%H:%M")
+    date_part = now.strftime("%m月%d日")   # 05月01日
+    time_part = now.strftime("%H:%M")      # 14:05
 
+    # ==================== 你要的最终格式 ====================
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
-        f.write(f"{date_part}\n")                 # 第一行：日期
-        f.write(f"{time_part}更新,#genre#\n")     # 第二行：时间
-        f.write("更新时间展示,http://127.0.0.1/null\n")
+        f.write("更新时间,#genre#\n")
+        f.write(f"{date_part} {time_part},http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
