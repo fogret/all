@@ -6,8 +6,6 @@ import glob
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
-import aiohttp
-import asyncio
 
 # ==================== 读取 alias.txt ====================
 def load_alias_map():
@@ -78,63 +76,48 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ==================== 修复后的扫描逻辑 ====================
-async def aio_check(session, ip_port, url_end):
+# ==================== 高速稳定扫描（方案 B） ====================
+session = requests.Session()
+
+def check_ip_port(ip_port, url_end):
     url = f"http://{ip_port}{url_end}"
-    timeouts = [2, 4, 4]
-
-    for attempt in range(3):
+    for _ in range(2):  # 重试 1 次
         try:
-            async with session.get(url, timeout=timeouts[attempt]) as resp:
-                text = await resp.text(errors="ignore")
-
+            resp = session.get(url, timeout=1.5)
+            if resp.status_code == 200:
+                text = resp.text
                 if ("Multi stream daemon" in text) or ("udpxy status" in text) or ("udpxy" in text):
-                    print(f"[OK] {ip_port}（第 {attempt+1} 次）")
                     return ip_port
-
-        except asyncio.TimeoutError:
-            print(f"[超时] {ip_port}（第 {attempt+1} 次）")
         except:
-            print(f"[失败] {ip_port}（第 {attempt+1} 次）")
-
+            pass
     return None
 
-# ==================== 异步扫描 ====================
-async def aio_scan(ip_ports, url_end, max_conn=200):
-    connector = aiohttp.TCPConnector(limit=max_conn)
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [aio_check(session, ip_port, url_end) for ip_port in ip_ports]
-        results = []
-
-        count = 0
-        total = len(tasks)
-
-        for future in asyncio.as_completed(tasks):
-            r = await future
-            count += 1
-
-            if count % 50 == 0:
-                print(f"进度：{count}/{total}")
-
-            if r:
-                results.append(r)
-
-        return results
-
-# ==================== 扫描入口 ====================
 def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
-    print(f"开始异步扫描，共 {len(ip_ports)} 个地址...")
+    total = len(ip_ports)
 
-    max_conn = 200
+    max_workers = os.cpu_count() * 40  # 自动调节线程数
 
-    start = time.time()
-    results = asyncio.run(aio_scan(ip_ports, url_end, max_conn=max_conn))
-    end = time.time()
+    print(f"开始高速扫描，共 {total} 个地址，线程数：{max_workers}")
 
-    print(f"扫描完成，用时 {int(end - start)} 秒，有效 {len(results)} 个")
-    return results
+    valid = []
+    checked = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
+
+        for future in as_completed(futures):
+            checked += 1
+            result = future.result()
+            if result:
+                valid.append(result)
+
+            if checked % 200 == 0:
+                print(f"进度：{checked}/{total}，有效：{len(valid)}")
+
+    print(f"扫描完成，有效 {len(valid)} 个")
+    return valid
 
 # ==================== 每省扫描逻辑 ====================
 def multicast_province(config_file):
@@ -156,7 +139,7 @@ def multicast_province(config_file):
         with open(f"ip/{province}_ip.txt", 'w', encoding='utf-8') as f:
             f.write('\n'.join(all_ip_ports))
 
-        # ==================== 存档合并：改回原逻辑 ====================
+        # ==================== 存档合并：原逻辑 ====================
         if os.path.exists(f"ip/存档_{province}_ip.txt"):
             with open(f"ip/存档_{province}_ip.txt", 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -258,12 +241,12 @@ def main():
             new_content_lines.append(f"{cat},#genre#")
             new_content_lines.extend(final_sort_data[cat])
 
-    # ==================== 更新时间（中文格式，修正 UTC 用法） ====================
+    # ==================== 更新时间 ====================
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-    date_part = now.strftime("%m月%d日")   # 05月01日
-    time_part = now.strftime("%H:%M")      # 14:05
+    date_part = now.strftime("%m月%d日")
+    time_part = now.strftime("%H:%M")
 
-    # ==================== 最终格式 ====================
+    # ==================== 最终输出 ====================
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
         f.write("更新时间,#genre#\n")
         f.write(f"{date_part} {time_part},http://127.0.0.1/null\n")
