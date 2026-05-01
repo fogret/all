@@ -9,7 +9,7 @@ from collections import OrderedDict
 import aiohttp
 import asyncio
 
-# ==================== 新增：读取alias.txt 标准频道别名映射 ====================
+# ==================== 读取 alias.txt ====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists("alias.txt"):
@@ -24,7 +24,7 @@ def load_alias_map():
                     alias_map[alias] = standard_name
     return alias_map
 
-# ==================== 新增：读取demo.txt 分类顺序 + 频道排序规则 ====================
+# ==================== 读取 demo.txt ====================
 def load_demo_order():
     category_order = []
     category_channel_order = OrderedDict()
@@ -45,7 +45,7 @@ def load_demo_order():
                     category_channel_order[current_cat].append(line.strip())
     return category_order, category_channel_order
 
-# ==================== 原有全部函数 完全原样保留不动 ====================
+# ==================== 原有配置读取 ====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -65,6 +65,7 @@ def read_config(config_file):
     except Exception as e:
         print(f"读取文件错误: {e}")
 
+# ==================== 生成扫描 IP 列表 ====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -77,45 +78,56 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ==================== 极速 aiohttp 异步扫描 ====================
-async def aio_check(session, ip_port, url_end):
-    url = f"http://{ip_port}{url_end}"
-    try:
-        async with session.get(url, timeout=2) as resp:
-            text = await resp.text()
-            if "Multi stream daemon" in text or "udpxy status" in text:
-                print(f"{url} 访问成功")
-                return ip_port
-    except:
-        return None
+# ==================== 真实转发检测 + 三次重试 + 智能判断服务器慢 ====================
+async def aio_check(session, ip_port):
+    test_url = f"http://{ip_port}/rtp/239.1.1.1:1234"
 
-async def aio_scan(ip_ports, url_end, max_conn=2000):
+    # 三次重试：第一次 2 秒，第二次 4 秒，第三次 4 秒
+    timeouts = [2, 4, 4]
+
+    for attempt in range(3):
+        try:
+            async with session.get(test_url, timeout=timeouts[attempt]) as resp:
+                if resp.status == 200:
+                    print(f"{test_url} 成功（第 {attempt+1} 次，timeout={timeouts[attempt]} 秒）")
+                    return ip_port
+        except asyncio.TimeoutError:
+            print(f"{test_url} 超时（第 {attempt+1} 次，timeout={timeouts[attempt]} 秒）")
+        except:
+            print(f"{test_url} 失败（第 {attempt+1} 次）")
+
+    return None
+
+# ==================== 异步扫描 ====================
+async def aio_scan(ip_ports, url_end, max_conn=200):
     connector = aiohttp.TCPConnector(limit=max_conn)
-    timeout = aiohttp.ClientTimeout(total=3)
 
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = [aio_check(session, ip_port, url_end) for ip_port in ip_ports]
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [aio_check(session, ip_port) for ip_port in ip_ports]
         results = []
+
         for future in asyncio.as_completed(tasks):
             r = await future
             if r:
                 results.append(r)
+
         return results
 
+# ==================== 扫描入口 ====================
 def scan_ip_port(ip, port, option, url_end):
     ip_ports = generate_ip_ports(ip, port, option)
     print(f"开始异步扫描，共 {len(ip_ports)} 个地址...")
 
-    max_conn = 2000 if option % 2 == 1 else 800
+    max_conn = 200  # 固定并发 200
 
     start = time.time()
     results = asyncio.run(aio_scan(ip_ports, url_end, max_conn=max_conn))
     end = time.time()
 
-    print(f"扫描完成，用时 {end - start:.2f} 秒，有效 {len(results)} 个")
+    print(f"扫描完成，用时 {int(end - start)} 秒，有效 {len(results)} 个")
     return results
 
-# ==================== 原有逻辑继续 ====================
+# ==================== 每省扫描逻辑 ====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
@@ -162,6 +174,7 @@ def multicast_province(config_file):
     else:
         print(f"\n{province} 扫描完成，未扫描到有效 ip_port")
 
+# ==================== TXT 转 M3U ====================
 def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -231,15 +244,17 @@ def main():
             new_content_lines.extend(final_sort_data[cat])
 
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    current_time = now.strftime("%Y/%m/%d %H:%M")
+    date_part = now.strftime("%Y/%m/%d")
+    time_part = now.strftime("%H:%M")
 
     with open("zubo_all.txt", "w", encoding="utf-8", newline='') as f:
-        f.write(f"{current_time}更新,#genre#\n")
+        f.write(f"{date_part}\n")                 # 第一行：日期
+        f.write(f"{time_part}更新,#genre#\n")     # 第二行：时间
         f.write("更新时间展示,http://127.0.0.1/null\n")
         f.write('\n'.join(new_content_lines))
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n组播地址获取完成，已完成别名统一 + demo 分类排序，中文乱码问题已修复")
+    print("\n组播地址获取完成，已完成别名统一 + demo 分类排序")
 
 if __name__ == "__main__":
     main()
