@@ -2,7 +2,7 @@ name: zubo
 
 on:
   schedule:
-    - cron: '0 11 */3 * *'   # 北京时间 19:00，每 3 天执行一次
+    - cron: '0 11 */3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -36,6 +36,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add zubo_all.txt zubo_all.m3u || exit 0
-          git commit -m "更新组播源（已测速排序）" || exit 0
+          git add .
+          git commit -m "自动更新IP与组播文件"
           git push
