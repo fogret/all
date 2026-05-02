@@ -7,11 +7,11 @@ import requests
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===================== 新增配置文件路径 =====================
+# ===================== 配置文件 不动 =====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 
-# ===================== 加载alias.txt 标准频道名映射 =====================
+# ===================== 加载别名映射 不动 =====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
@@ -22,17 +22,15 @@ def load_alias_map():
                     continue
                 parts = [p.strip() for p in line.split(",") if p.strip()]
                 standard_name = parts[0]
-                # 所有别名统一替换成标准频道名
                 for alias in parts[1:]:
                     alias_map[alias] = standard_name
     return alias_map
 
-# ===================== 加载demo.txt 分类顺序 + 频道排序规则 =====================
+# ===================== 加载demo分类+顺序 不动 =====================
 def load_demo_category():
     category_order = []
     category_channel_list = OrderedDict()
     now_category = None
-
     if os.path.exists(DEMO_FILE):
         with open(DEMO_FILE, "r", encoding="utf-8") as f:
             for line in f:
@@ -47,7 +45,7 @@ def load_demo_category():
                     category_channel_list[now_category].append(line)
     return category_order, category_channel_list
 
-# ===================== 原有全部函数 一字未改 =====================
+# ===================== 以下所有原有代码 完全原封不动 无任何修改 =====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -165,53 +163,60 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 新增：汇总合并 + 统一频道名 + 按demo分类排序 =====================
-def merge_all_content():
+# ===================== 全新重写 汇总逻辑 只改这里 =====================
+def merge_all_channel():
     alias_map = load_alias_map()
-    cate_order, cate_chan = load_demo_category()
+    cate_order, cate_std_list = load_demo_category()
 
-    # 读取所有各省组播文件内容
-    all_raw_lines = []
-    for file_path in glob.glob('组播_*.txt'):
-        with open(file_path, 'r', encoding="utf-8") as f:
-            all_raw_lines.extend(f.readlines())
+    # 收集所有纯频道 剔除原有省份分组
+    raw_channel_dict = {}
+    for file in glob.glob("组播_*.txt"):
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f.readlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if "," in line and not line.endswith("#genre#"):
+                    name, url = line.split(",", 1)
+                    # 统一标准频道名
+                    std_name = alias_map.get(name.strip(), name.strip())
+                    raw_channel_dict[std_name] = url.strip()
 
-    # 1.统一替换为标准频道名
-    deal_lines = []
-    for line in all_raw_lines:
-        line_strip = line.strip()
-        if "," in line_strip and not line_strip.endswith("#genre#"):
-            name, url = line_strip.split(",", 1)
-            # 别名匹配替换标准名
-            standard_name = alias_map.get(name.strip(), name.strip())
-            deal_lines.append(f"{standard_name},{url}\n")
-        else:
-            deal_lines.append(line)
+    # 按demo分类顺序 归类分组
+    final_out = []
+    # 1.顶部虚拟更新时间分类
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    time_str = now.strftime("%Y/%m/%d %H:%M")
+    final_out.append("更新时间,#genre#\n")
+    final_out.append(f"{time_str},http://127.0.0.1\n\n")
 
-    # 2.按demo.txt分类、顺序重新规整排版
-    return deal_lines
+    # 2.按你demo所有分类依次排版
+    for cate_name in cate_order:
+        final_out.append(f"{cate_name},#genre#\n")
+        # 该分类下按demo内部频道顺序排列
+        for chan in cate_std_list[cate_name]:
+            if chan in raw_channel_dict:
+                final_out.append(f"{chan},{raw_channel_dict[chan]}\n")
+        final_out.append("\n")
 
-# ===================== 主函数 只改汇总部分，其他全保留 =====================
+    return ''.join(final_out)
+
+# ===================== 主函数 只改汇总部分 其余不动 =====================
 def main():
-    # 原有各省扫描逻辑不变
+    # 原有扫描逻辑 完全不动
     for config_file in glob.glob(os.path.join('ip', '*_config.txt')):
         multicast_province(config_file)
 
-    # 调用新汇总处理：统一频道名+分类排序
-    final_content = merge_all_content()
+    # 执行新汇总规则
+    total_content = merge_all_channel()
 
-    # 北京时间更新时间 原有格式不变
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
-    current_time = now.strftime("%Y/%m/%d %H:%M")
-
-    # 写入zubo_all.txt 原有头部格式完全不动
+    # 写入最终txt
     with open("zubo_all.txt", "w", encoding="utf-8") as f:
-        f.write(f"{current_time}更新,#genre#\n")
-        f.write(f"浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n")
-        f.write(''.join(final_content))
+        f.write(total_content)
 
+    # 转m3u 原有函数不变
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print(f"组播地址获取完成，已完成频道名统一+分类排序")
+    print(f"组播扫描完成，已按标准分类+统一频道名汇总完毕")
 
 if __name__ == "__main__":
     main()
