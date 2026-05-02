@@ -2,40 +2,27 @@ name: zubo
 
 on:
   schedule:
-    - cron: '0 11 */3 * * *'
+    - cron: '0 11 */3 * *'
   workflow_dispatch:
 
 jobs:
-  run-script:
+  run:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.11
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: 安装Python依赖
         run: |
-          pip install --upgrade pip
           pip install requests aiohttp
 
-      - name: Run
-        run: |
-          cd $GITHUB_WORKSPACE
-          python zubo.py
+      - name: 运行扫描代码
+        run: python zubo.py
 
-      - name: Commit output files
+      - name: 提交更新文件
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --global user.name "bot"
+          git config --global user.email "bot@github.com"
           git add .
-          git commit -m "自动更新IP与组播文件"
+          git commit -m "自动更新IP + 测速排序"
           git push
