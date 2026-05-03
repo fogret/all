@@ -5,25 +5,27 @@ import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===================== 基础配置 =====================
-SCAN_THREADS = 100
+# ===================== 配置 可控分批生成IP 防卡死 =====================
+SCAN_THREADS = 80
 CHECK_TIMEOUT = 1.2
 SAVE_DIR = "ip"
 IPTV_PORTS = [4000,4022,8012,8188,8686,8800,2083,7086]
+
+# 关键：每一批最多生成扫描 2000 个IP，严格控制，不爆内存不卡死
+BATCH_IP_LIMIT = 2000
 
 # 浏览器UA请求头
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# 全国 运营商大网段 自动匹配规则
+# 全国运营商大网段
 OP_SEG_MAP = [
     ("电信", ["113.0.0.0/8", "114.0.0.0/8", "211.0.0.0/8"]),
     ("联通", ["121.0.0.0/8", "123.0.0.0/8", "60.0.0.0/8"]),
     ("移动", ["171.0.0.0/8", "221.0.0.0/8", "58.0.0.0/8"])
 ]
 
-# 批量遍历扫描的总大网段池
 SCAN_ALL_SEGS = [
     "113.0.0.0-113.255.255.255",
     "114.0.0.0-114.255.255.255",
@@ -44,16 +46,25 @@ def ip_str_to_int(ip):
 def int_to_ip_str(num):
     return f"{(num>>24)&0xff}.{(num>>16)&0xff}.{(num>>8)&0xff}.{num&0xff}"
 
-def gen_ip_list(ip_range):
+# 分段生成IP：按批次限量生成，不一次性全部输出
+def gen_ip_batch(ip_range, start_offset, batch_size):
     start, end = ip_range.split('-')
     start_num = ip_str_to_int(start)
     end_num = ip_str_to_int(end)
-    ip_list = []
-    for n in range(start_num, end_num + 1):
-        ip_list.append(int_to_ip_str(n))
-    return ip_list
 
-# 判断IP属于哪个运营商
+    current_start = start_num + start_offset
+    if current_start > end_num:
+        return [], 0
+
+    current_end = min(current_start + batch_size - 1, end_num)
+    batch_ips = []
+    for n in range(current_start, current_end + 1):
+        batch_ips.append(int_to_ip_str(n))
+
+    next_offset = start_offset + batch_size
+    return batch_ips, next_offset
+
+# 判断IP运营商
 def get_ip_operator(ip):
     ip_num = ip_str_to_int(ip)
     for op, cidr_list in OP_SEG_MAP:
@@ -77,44 +88,51 @@ def check_iptv_udpxy(ip, port):
     except:
         return None
 
-# ===================== 按单段网段分批扫描 =====================
-def scan_single_segment(seg):
-    all_task = []
+# ===================== 单网段 循环分批扫描 =====================
+def scan_seg_by_batch(seg):
+    all_alive = []
+    offset = 0
     print(f"\n========================================")
-    print(f"开始扫描网段：{seg}")
+    print(f"开始分段扫描网段：{seg}")
     print("========================================")
 
-    ips = gen_ip_list(seg)
-    for ip in ips:
-        for p in IPTV_PORTS:
-            all_task.append((ip, p))
+    while True:
+        # 每次只生成限量一批IP
+        batch_ips, offset = gen_ip_batch(seg, offset, BATCH_IP_LIMIT)
+        if not batch_ips:
+            break
 
-    total = len(all_task)
-    print(f"本段待扫描总数：{total}")
+        task_list = []
+        for ip in batch_ips:
+            for p in IPTV_PORTS:
+                task_list.append((ip, p))
 
-    temp_alive = []
-    count = 0
+        if not task_list:
+            continue
 
-    with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
-        futures = [exe.submit(check_iptv_udpxy, ip, pt) for ip, pt in all_task]
-        for fu in as_completed(futures):
-            count += 1
-            ret = fu.result()
-            if ret:
-                temp_alive.append(ret)
-            if count % 5000 == 0:
-                print(f"已扫描：{count}/{total} | 当前存活：{len(temp_alive)}")
+        print(f"本批次生成IP任务：{len(task_list)} 个")
+        batch_alive = []
 
-    temp_alive = sorted(list(set(temp_alive)))
-    print(f"\n✅ 本段扫描完成，有效IP：{len(temp_alive)} 条")
-    return temp_alive
+        with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
+            futures = [exe.submit(check_iptv_udpxy, ip, pt) for ip, pt in task_list]
+            for fu in as_completed(futures):
+                res = fu.result()
+                if res:
+                    batch_alive.append(res)
 
-# ===================== 自动归类、自动生成对应文件 =====================
+        batch_alive = list(set(batch_alive))
+        all_alive.extend(batch_alive)
+        print(f"本批次扫描完成，本轮有效IP：{len(batch_alive)} | 累计当前网段有效：{len(all_alive)}")
+
+    all_alive = sorted(list(set(all_alive)))
+    print(f"\n✅ 网段 {seg} 全部分批扫描完毕，总有效IP：{len(all_alive)}")
+    return all_alive
+
+# ===================== 自动归类生成对应文件 =====================
 def auto_save_to_file(alive_list):
     if not os.path.exists(SAVE_DIR):
         os.mkdir(SAVE_DIR)
 
-    # 按运营商分类存放
     op_dict = {}
     for item in alive_list:
         ip = item.split(":")[0]
@@ -123,36 +141,30 @@ def auto_save_to_file(alive_list):
             op_dict[op] = []
         op_dict[op].append(item)
 
-    # 自动生成 运营商_config.txt 文件，格式和你现有完全一致
     for op, ip_list in op_dict.items():
-        # 文件名自动生成：运营商_config.txt
         file_name = f"{op}_config.txt"
         save_path = os.path.join(SAVE_DIR, file_name)
-        # 自动拼接 ,12 格式
         lines = sorted(list(set([x + ",12" for x in ip_list])))
         with open(save_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-        print(f"📁 已自动生成文件：ip/{file_name}  有效条数：{len(lines)}")
+        print(f"📁 自动生成文件：ip/{file_name} | 有效数量：{len(lines)}")
 
 # ===================== 主程序 =====================
 def main():
-    print("========== 启动全自动IPTV组播扫描 自动匹配运营商生成文件 ==========")
+    print("========== 启动IPTV分批限量扫描 严格控制IP生成数量 ==========")
     total_all_alive = []
 
-    # 逐个网段分批扫描，不一次性加载巨量IP
     for seg in SCAN_ALL_SEGS:
-        res = scan_single_segment(seg)
+        res = scan_seg_by_batch(seg)
         total_all_alive.extend(res)
 
-    # 全局去重 + 自动分类存文件
     total_all_alive = sorted(list(set(total_all_alive)))
     auto_save_to_file(total_all_alive)
 
     print("\n========================================")
-    print("          全部网段扫描结束")
+    print("        所有网段分批扫描全部完成")
     print("========================================")
     print(f"全局去重总有效组播IP：{len(total_all_alive)} 条")
-    print(f"所有文件已自动分类保存至 ip 文件夹")
     print("========================================")
 
 if __name__ == "__main__":
