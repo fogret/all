@@ -5,24 +5,45 @@ on:
     - cron: '0 11 */3 * *'
   workflow_dispatch:
 
+# 核心权限，专治403拒绝推送
+permissions:
+  contents: write
+
 jobs:
-  run:
+  run-script:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
 
-      - name: 安装Python依赖
+      - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install requests aiohttp
 
-      - name: 运行扫描代码
-        run: python zubo.py
+      # 只设置局部提交用户名，不加global全局配置，避免冲突
+      - name: Git 配置临时提交账号
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 运行扫描测速脚本
+        run: |
+          cd $GITHUB_WORKSPACE
+          python ./zubo.py
 
       - name: 提交更新文件
         run: |
-          git config --global user.name "bot"
-          git config --global user.email "bot@github.com"
           git add .
           git commit -m "自动更新IP + 测速排序"
           git push
