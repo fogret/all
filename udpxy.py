@@ -1,56 +1,60 @@
 # -*- coding: utf-8 -*-
 import os
-import time
 import requests
 from concurrent.futures import ThreadPoolExecutor
-import sys
 
-# ===================== 极速稳定核心配置 =====================
-SCAN_THREADS = 150
+# ==================== 配置 不用随便改 稳+快 不漏扫 ====================
+SCAN_THREADS = 120
 CHECK_TIMEOUT = 0.7
 SAVE_DIR = "ip"
 BATCH_STEP = 256
 
-# 最简快速连通校验，只测通不通，速度最快
-UDPXY_CHECK = ["/stat", "/status"]
-# IPTV通用全量常用端口
-IPTV_PORTS = [3456,4000,4022,6000,7086,8012,8188,8686,8800,8888,8899]
+# 只做基础连通检测 不做深度测速 后期你自己测
+UDPXY_API_LIST = ["/stat", "/status"]
+# 国内IPTV通用全量端口
+SCAN_PORTS = [4000,4022,8012,8188,8686,8800,8888,8899]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-# ===================== IP转换工具 =====================
-def ip2num(ip):
-    a, b, c, d = map(int, ip.split('.'))
+# ==================== IP 进制转换 ====================
+def ip_to_int(ip):
+    a,b,c,d = map(int, ip.split('.'))
     return (a << 24) | (b << 16) | (c << 8) | d
 
-def num2ip(num):
+def int_to_ip(num):
     return f"{(num>>24)&0xff}.{(num>>16)&0xff}.{(num>>8)&0xff}.{num&0xff}"
 
-# ===================== 公网IP 国内/国外 + 运营商自动识别 =====================
-def get_ip_location(ip):
+# ==================== 自动查询：国家+省份+运营商 ====================
+def get_ip_info(ip):
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=1.5)
+        res = requests.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=1.3)
         data = res.json()
+        # 不是中国 直接丢弃
         if data.get("country") != "中国":
-            return "国外"
-        isp = data.get("isp","")
-        if "电信" in isp:
-            return "电信"
-        elif "联通" in isp or "网通" in isp:
-            return "联通"
-        elif "移动" in isp or "铁通" in isp:
-            return "移动"
-        else:
-            return "国内其他"
-    except:
-        return "未知"
+            return None, None
+        
+        province = data.get("regionName", "").strip()
+        isp = data.get("isp", "").strip()
 
-# ===================== 极速udpxy连通检测 只测通断 =====================
-def fast_check(ip, port):
+        if "电信" in isp:
+            op = "电信"
+        elif "联通" in isp or "网通" in isp:
+            op = "联通"
+        elif "移动" in isp or "铁通" in isp:
+            op = "移动"
+        else:
+            return None, None
+        
+        return province, op
+    except:
+        return None, None
+
+# ==================== 快速检测udpxy是否存活 只看通不通 ====================
+def check_alive(ip, port):
     try:
-        for api in UDPXY_CHECK:
+        for api in UDPXY_API_LIST:
             url = f"http://{ip}:{port}{api}"
             r = requests.get(url, timeout=CHECK_TIMEOUT, headers=HEADERS)
             if "udpxy" in r.text.lower() or "multi stream daemon" in r.text:
@@ -59,82 +63,79 @@ def fast_check(ip, port):
         pass
     return None
 
-# ===================== 全网完整无死角遍历扫描 不写死任何网段 =====================
-def scan_all_world_ip():
-    # 分类容器
-    res_dict = {
-        "电信": [],
-        "联通": [],
-        "移动": []
-    }
+# ==================== 全IP遍历 全国挨个扫 自动分省分运营商 ====================
+def scan_all_country_ip():
+    # 字典：key=省份+运营商  value=有效ip列表
+    all_result = {}
 
-    print("✅ 开始全网全IP无限制扫描 | 全覆盖所有IPTV源", flush=True)
-    print("✅ 不限制网段、不提前划定范围、全球全IP逐个遍历", flush=True)
+    # 全网公网完整范围 0.0.0.1 ~ 255.255.255.255
+    start_ip = ip_to_int("0.0.0.1")
+    end_ip = ip_to_int("255.255.255.255")
+    current = start_ip
 
-    # 全网完整范围：0.0.0.1 ~ 255.255.255.255
-    start_all = ip2num("0.0.0.1")
-    end_all = ip2num("255.255.255.255")
-    current = start_all
+    print("✅ 开始全国全IP遍历扫描", flush=True)
+    print("✅ 自动分省、分电信联通移动、国外自动过滤", flush=True)
 
-    while current <= end_all:
-        batch_end = min(current + BATCH_STEP - 1, end_all)
-        batch_ips = []
+    while current <= end_ip:
+        batch_end = min(current + BATCH_STEP - 1, end_ip)
+        ip_list = [int_to_ip(n) for n in range(current, batch_end + 1)]
 
-        # 逐IP生成，一个不漏、不跳、不缺
-        for n in range(current, batch_end + 1):
-            ip = num2ip(n)
-            batch_ips.append(ip)
+        print(f"\n📡 扫描区间：{int_to_ip(current)} ~ {int_to_ip(batch_end)}", flush=True)
 
-        print(f"\n📡 扫描区间：{num2ip(current)} ~ {num2ip(batch_end)}", flush=True)
-
-        # 批量组装扫描任务
+        # 组装所有扫描任务
         tasks = []
-        for ip in batch_ips:
-            for p in IPTV_PORTS:
+        for ip in ip_list:
+            for p in SCAN_PORTS:
                 tasks.append((ip, p))
 
-        # 多线程极速扫描
-        if tasks:
-            with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
-                raw_result = list(exe.map(lambda x: fast_check(*x), tasks))
+        # 多线程批量扫描
+        with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
+            res_list = list(exe.map(lambda x: check_alive(*x), tasks))
 
-            # 过滤有效udpxy，再自动归类国内三大运营商
-            valid_list = [i for i in raw_result if i]
-            for item in valid_list:
-                ip_only = item.split(":")[0]
-                tag = get_ip_location(ip_only)
-                if tag in res_dict:
-                    res_dict[tag].append(item)
+        # 过滤有效结果 归类省份+运营商
+        valid_data = [i for i in res_list if i]
+        for item in valid_data:
+            ip_addr = item.split(":")[0]
+            province, op = get_ip_info(ip_addr)
+            if not province or not op:
+                continue
 
-            print(f"✅ 本段扫描完成，本段存活udpxy总数：{len(valid_list)}", flush=True)
+            file_key = f"{province}{op}"
+            if file_key not in all_result:
+                all_result[file_key] = []
+            all_result[file_key].append(item)
 
+        print(f"✅ 本段扫描完成 有效存活：{len(valid_data)} 条", flush=True)
         current = batch_end + 1
 
-    # 全部去重排序
-    for k in res_dict:
-        res_dict[k] = sorted(list(set(res_dict[k])))
-    return res_dict
+    # 所有结果去重
+    for k in all_result:
+        all_result[k] = sorted(list(set(all_result[k])))
+    return all_result
 
-# ===================== 主程序 输出文件 =====================
-def main():
+# ==================== 生成文件 和你现有文件名、格式完全一致 ====================
+def save_file(data):
     if not os.path.exists(SAVE_DIR):
         os.mkdir(SAVE_DIR)
 
-    # 全网扫描
-    all_data = scan_all_world_ip()
+    for name, ip_list in data.items():
+        # 文件名：广东电信_config.txt 完全跟你现有的一模一样
+        file_path = os.path.join(SAVE_DIR, f"{name}_config.txt")
+        # 每行格式：ip:端口,12 完全对齐你原版
+        write_lines = [line + ",12" for line in ip_list]
 
-    # 分别保存 电信/联通/移动 配置文件
-    for op, data_list in all_data.items():
-        save_path = os.path.join(SAVE_DIR, f"{op}_config.txt")
-        write_lines = [line + ",12" for line in data_list]
-        with open(save_path, "w", encoding="utf-8") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write("\n".join(write_lines))
-        print(f"\n📁 已导出 {op}_config.txt  有效总量：{len(write_lines)}", flush=True)
 
-    total_sum = sum(len(v) for v in all_data.values())
-    print("\n========================================", flush=True)
-    print(f"🎉 全网扫描全部结束！国内有效IPTV udpxy 总数：{total_sum}")
-    print("========================================", flush=True)
+        print(f"\n📁 已生成：{name}_config.txt  数量：{len(write_lines)}")
+
+# ==================== 主程序 ====================
+def main():
+    res = scan_all_country_ip()
+    save_file(res)
+    print("\n======================================")
+    print("🎉 全国所有省份扫描全部结束 全部保存完成")
+    print("======================================")
 
 if __name__ == "__main__":
     main()
