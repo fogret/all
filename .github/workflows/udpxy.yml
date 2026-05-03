@@ -25,7 +25,7 @@ jobs:
         run: pip install requests
 
       - name: 开始IPTV组播扫描
-        run: python main.py
+        run: python udpxy.py
 
       - name: 提交扫描结果
         run: |
