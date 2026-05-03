@@ -2,6 +2,7 @@
 import os
 import time
 import datetime
+import ipaddress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 保存目录 单独新建 不改动你原文件
@@ -16,7 +17,7 @@ SCAN_PORTS = [
     "8899","2083","6000","8077","8686"
 ]
 
-# ===================== 只写入 北京 / 贵州 / 湖南 精准专用IP网段 =====================
+# ===================== 北京 / 贵州 / 湖南 精准IP网段 =====================
 PROVINCE_SEG_LIST = [
     # 北京
     {"prov":"北京","isp":"电信","seg_list":[
@@ -54,7 +55,6 @@ PROVINCE_SEG_LIST = [
 
 # CIDR网段 转全部IP列表
 def cidr_to_ip_list(cidr):
-    import ipaddress
     ip_list = []
     try:
         net = ipaddress.IPv4Network(cidr, strict=False)
@@ -64,7 +64,7 @@ def cidr_to_ip_list(cidr):
         pass
     return ip_list
 
-# 单个IP+端口 存活检测 沿用你原版逻辑
+# 单个IP+端口 存活检测
 def check_ip_alive(ip, port):
     try:
         url1 = f"http://{ip}:{port}/stat"
@@ -79,46 +79,57 @@ def check_ip_alive(ip, port):
 # 批量扫描当前省份运营商所有网段
 def scan_one_prov_isp(prov, isp, seg_list):
     all_ip_pool = []
+    print(f"\n==============================")
+    print(f"开始处理：{prov}{isp}")
+    print(f"==============================")
+
+    # 遍历加载当前所有网段
     for seg in seg_list:
-        all_ip_pool.extend(cidr_to_ip_list(seg))
+        ip_arr = cidr_to_ip_list(seg)
+        all_ip_pool.extend(ip_arr)
+        print(f"读取网段 {seg} 待扫描IP：{len(ip_arr)} 个")
+
     all_ip_pool = list(set(all_ip_pool))
-    print(f"【开始扫描 {prov}{isp}】 共计待扫描IP：{len(all_ip_pool)} 个")
+    total_task = len(all_ip_pool) * len(SCAN_PORTS)
+    print(f"\n{prov}{isp} 总共待扫描任务：{total_task} 个")
 
     alive_result = []
+    finish_num = 0
+
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
         task_list = []
         for ip in all_ip_pool:
             for port in SCAN_PORTS:
                 task_list.append(exe.submit(check_ip_alive, ip, port))
         
-        finish_num = 0
+        # 控制打印频率，不刷屏，清晰看进度
         for task in as_completed(task_list):
             finish_num += 1
-            if finish_num % 200 == 0:
-                print(f"{prov}{isp} 已扫描：{finish_num}/{len(task_list)} | 已累计有效：{len(alive_result)}")
+            if finish_num % 500 == 0:
+                print(f"已扫描：{finish_num}/{total_task} | 有效IP累计：{len(alive_result)}")
             ret = task.result()
             if ret:
                 alive_result.append(ret)
     
     alive_result = list(set(alive_result))
-    print(f"【{prov}{isp} 扫描完成】 有效可用IP：{len(alive_result)} 条\n")
+    print(f"\n✅ {prov}{isp} 扫描完成")
+    print(f"✅ 最终有效可用IP：{len(alive_result)} 条")
     return alive_result
 
 # 主程序入口
 def main():
     if not os.path.exists(SAVE_DIR):
         os.mkdir(SAVE_DIR)
-    print("===== 开始扫描 北京 / 贵州 / 湖南 三省IPTV专用网段 =====")
-    print("===== 结果全部保存到 output 文件夹 =====")
+    print("===== 开始扫描 北京 / 贵州 / 湖南 三省专用IP网段 =====")
+    print("===== 所有结果统一保存到 output 文件夹 =====")
 
     for item in PROVINCE_SEG_LIST:
         prov_name = item["prov"]
         isp_name = item["isp"]
         seg_arr = item["seg_list"]
 
-        # 扫描当前省份运营商
         alive_data = scan_one_prov_isp(prov_name, isp_name, seg_arr)
-        # 写入对应文件 格式 ip:端口,12
+        # 写入文件 格式 ip:端口,12
         file_name = f"{prov_name}{isp_name}_config.txt"
         file_path = os.path.join(SAVE_DIR, file_name)
 
@@ -126,8 +137,8 @@ def main():
             for line in alive_data:
                 f.write(line + ",12\n")
     
-    print("==================== 全部省份扫描完毕 ====================")
-    print(f"所有文件已全部生成完毕，存放目录：./{SAVE_DIR}")
+    print("\n==================== 全部省份扫描任务完毕 ====================")
+    print(f"所有生成文件全部存放于 ./output 文件夹")
 
 if __name__ == "__main__":
     main()
