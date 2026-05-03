@@ -9,7 +9,6 @@ import sys
 SCAN_THREADS = 150
 CHECK_TIMEOUT = 0.7
 SAVE_DIR = "ip"
-# 标准256IP一批，顺序规范、不跳段、不漏扫、不卡死
 BATCH_STEP = 256
 
 # 最简快速连通校验，只测通不通，速度最快
@@ -38,7 +37,7 @@ def get_ip_location(ip):
             return "国外"
         isp = data.get("isp","")
         if "电信" in isp:
-            return "电信
+            return "电信"
         elif "联通" in isp or "网通" in isp:
             return "联通"
         elif "移动" in isp or "铁通" in isp:
