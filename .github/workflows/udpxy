@@ -1,0 +1,36 @@
+name: IPTV组播全网专属扫描
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每3天自动定时扫描 北京时间
+    - cron: '0 11 */3 * *'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 配置Python3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 开始IPTV组播扫描
+        run: python main.py
+
+      - name: 提交扫描结果
+        run: |
+          git config --local user.name "GitHub Action"
+          git config --local user.email "action@github.com"
+          git add .
+          git commit -m "更新IPTV组播专用扫描有效IP"
+          git push
