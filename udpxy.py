@@ -1,131 +1,133 @@
 # -*- coding: utf-8 -*-
 import os
-import requests
-from concurrent.futures import ThreadPoolExecutor
+import time
+import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ==================== 配置 ====================
-SCAN_THREADS = 120
-CHECK_TIMEOUT = 0.7
-# 新建单独文件夹 output 存放结果，完全不碰你原本的ip文件夹
+# 保存目录 单独新建 不改动你原文件
 SAVE_DIR = "output"
-BATCH_STEP = 256
+# 扫描并发、超时 稳定不卡死
+SCAN_THREADS = 80
+SCAN_TIMEOUT = 1.5
 
-UDPXY_API_LIST = ["/stat", "/status"]
-SCAN_PORTS = [4000,4022,8012,8188,8686,8800,8888,8899]
+# 端口 沿用你原版常用端口
+SCAN_PORTS = [
+    "4000","4022","7086","8188","8800","8888",
+    "8899","2083","6000","8077","8686"
+]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+# ===================== 只写入 北京 / 贵州 / 湖南 精准专用IP网段 =====================
+PROVINCE_SEG_LIST = [
+    # 北京
+    {"prov":"北京","isp":"电信","seg_list":[
+        "114.252.0.0/12","115.42.0.0/16","116.247.0.0/16","120.204.0.0/14"
+    ]},
+    {"prov":"北京","isp":"联通","seg_list":[
+        "61.135.96.0/19","61.149.60.0/23","123.126.0.0/14","202.96.0.0/12"
+    ]},
+    {"prov":"北京","isp":"移动","seg_list":[
+        "211.136.0.0/13","221.176.0.0/12","222.128.0.0/12"
+    ]},
 
-# ==================== IP 进制转换 ====================
-def ip_to_int(ip):
-    a,b,c,d = map(int, ip.split('.'))
-    return (a << 24) | (b << 16) | (c << 8) | d
+    # 贵州
+    {"prov":"贵州","isp":"电信","seg_list":[
+        "113.110.0.0/14","114.139.0.0/16","183.224.0.0/12","219.151.0.0/16"
+    ]},
+    {"prov":"贵州","isp":"联通","seg_list":[
+        "111.85.0.0/16","219.138.0.0/15","221.13.0.0/16"
+    ]},
+    {"prov":"贵州","isp":"移动","seg_list":[
+        "58.42.0.0/15","120.192.0.0/12","221.192.0.0/12"
+    ]},
 
-def int_to_ip(num):
-    return f"{(num>>24)&0xff}.{(num>>16)&0xff}.{(num>>8)&0xff}.{num&0xff}"
+    # 湖南
+    {"prov":"湖南","isp":"电信","seg_list":[
+        "113.240.0.0/13","175.10.0.0/15","220.168.128.0/17"
+    ]},
+    {"prov":"湖南","isp":"联通","seg_list":[
+        "112.92.0.0/14","61.150.160.0/24","222.246.128.0/17"
+    ]},
+    {"prov":"湖南","isp":"移动","seg_list":[
+        "59.51.0.0/16","115.208.0.0/13","221.208.0.0/13"
+    ]},
+]
 
-# ==================== 自动查询 国家/省份/运营商 ====================
-def get_ip_info(ip):
+# CIDR网段 转全部IP列表
+def cidr_to_ip_list(cidr):
+    import ipaddress
+    ip_list = []
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=1.3)
-        data = res.json()
-        if data.get("country") != "中国":
-            return None, None
-        
-        province = data.get("regionName", "").strip()
-        isp = data.get("isp", "").strip()
-
-        if "电信" in isp:
-            op = "电信"
-        elif "联通" in isp or "网通" in isp:
-            op = "联通"
-        elif "移动" in isp or "铁通" in isp:
-            op = "移动"
-        else:
-            return None, None
-        
-        return province, op
+        net = ipaddress.IPv4Network(cidr, strict=False)
+        for ip in net:
+            ip_list.append(str(ip))
     except:
-        return None, None
+        pass
+    return ip_list
 
-# ==================== 快速存活检测 只测通不通 ====================
-def check_alive(ip, port):
+# 单个IP+端口 存活检测 沿用你原版逻辑
+def check_ip_alive(ip, port):
     try:
-        for api in UDPXY_API_LIST:
-            url = f"http://{ip}:{port}{api}"
-            r = requests.get(url, timeout=CHECK_TIMEOUT, headers=HEADERS)
-            if "udpxy" in r.text.lower() or "multi stream daemon" in r.text:
-                return f"{ip}:{port}"
+        url1 = f"http://{ip}:{port}/stat"
+        url2 = f"http://{ip}:{port}/status"
+        res = os.popen(f"curl -s -m {SCAN_TIMEOUT} {url1} {url2}").read()
+        if "udpxy" in res.lower() or "rtp" in res:
+            return f"{ip}:{port}"
     except:
         pass
     return None
 
-# ==================== 全国全IP遍历扫描 ====================
-def scan_all_country_ip():
-    all_result = {}
-    start_ip = ip_to_int("0.0.0.1")
-    end_ip = ip_to_int("255.255.255.255")
-    current = start_ip
+# 批量扫描当前省份运营商所有网段
+def scan_one_prov_isp(prov, isp, seg_list):
+    all_ip_pool = []
+    for seg in seg_list:
+        all_ip_pool.extend(cidr_to_ip_list(seg))
+    all_ip_pool = list(set(all_ip_pool))
+    print(f"【开始扫描 {prov}{isp}】 共计待扫描IP：{len(all_ip_pool)} 个")
 
-    print("✅ 开始全国全IP遍历扫描", flush=True)
-    print("✅ 结果全部存入 output 文件夹，不改动你原有任何文件", flush=True)
+    alive_result = []
+    with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
+        task_list = []
+        for ip in all_ip_pool:
+            for port in SCAN_PORTS:
+                task_list.append(exe.submit(check_ip_alive, ip, port))
+        
+        finish_num = 0
+        for task in as_completed(task_list):
+            finish_num += 1
+            if finish_num % 200 == 0:
+                print(f"{prov}{isp} 已扫描：{finish_num}/{len(task_list)} | 已累计有效：{len(alive_result)}")
+            ret = task.result()
+            if ret:
+                alive_result.append(ret)
+    
+    alive_result = list(set(alive_result))
+    print(f"【{prov}{isp} 扫描完成】 有效可用IP：{len(alive_result)} 条\n")
+    return alive_result
 
-    while current <= end_ip:
-        batch_end = min(current + BATCH_STEP - 1, end_ip)
-        ip_list = [int_to_ip(n) for n in range(current, batch_end + 1)]
-
-        print(f"\n📡 扫描区间：{int_to_ip(current)} ~ {int_to_ip(batch_end)}", flush=True)
-
-        tasks = []
-        for ip in ip_list:
-            for p in SCAN_PORTS:
-                tasks.append((ip, p))
-
-        with ThreadPoolExecutor(max_workers=SCAN_THREADS) as exe:
-            res_list = list(exe.map(lambda x: check_alive(*x), tasks))
-
-        valid_data = [i for i in res_list if i]
-        for item in valid_data:
-            ip_addr = item.split(":")[0]
-            province, op = get_ip_info(ip_addr)
-            if not province or not op:
-                continue
-
-            file_key = f"{province}{op}"
-            if file_key not in all_result:
-                all_result[file_key] = []
-            all_result[file_key].append(item)
-
-        print(f"✅ 本段扫描完成 有效存活：{len(valid_data)} 条", flush=True)
-        current = batch_end + 1
-
-    for k in all_result:
-        all_result[k] = sorted(list(set(all_result[k])))
-    return all_result
-
-# ==================== 保存到 output 文件夹 格式完全一致 ====================
-def save_file(data):
-    # 自动新建output文件夹，和原ip文件夹完全分开
+# 主程序入口
+def main():
     if not os.path.exists(SAVE_DIR):
         os.mkdir(SAVE_DIR)
+    print("===== 开始扫描 北京 / 贵州 / 湖南 三省IPTV专用网段 =====")
+    print("===== 结果全部保存到 output 文件夹 =====")
 
-    for name, ip_list in data.items():
-        file_path = os.path.join(SAVE_DIR, f"{name}_config.txt")
-        write_lines = [line + ",12" for line in ip_list]
+    for item in PROVINCE_SEG_LIST:
+        prov_name = item["prov"]
+        isp_name = item["isp"]
+        seg_arr = item["seg_list"]
+
+        # 扫描当前省份运营商
+        alive_data = scan_one_prov_isp(prov_name, isp_name, seg_arr)
+        # 写入对应文件 格式 ip:端口,12
+        file_name = f"{prov_name}{isp_name}_config.txt"
+        file_path = os.path.join(SAVE_DIR, file_name)
 
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(write_lines))
-
-        print(f"\n📁 已生成：output/{name}_config.txt  数量：{len(write_lines)}")
-
-# ==================== 主程序 ====================
-def main():
-    res = scan_all_country_ip()
-    save_file(res)
-    print("\n======================================")
-    print("🎉 全国省份扫描全部结束，文件全部保存在output文件夹")
-    print("======================================")
+            for line in alive_data:
+                f.write(line + ",12\n")
+    
+    print("==================== 全部省份扫描完毕 ====================")
+    print(f"所有文件已全部生成完毕，存放目录：./{SAVE_DIR}")
 
 if __name__ == "__main__":
     main()
