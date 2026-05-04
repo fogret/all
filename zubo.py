@@ -9,14 +9,16 @@ import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===================== 全局稳定配置 直接改数字即可 =====================
+# ===================== 全局配置 还原你原版最快并发 =====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
-# 取消网段整体强制超时结束，只单IP超时跳过
+
+# 网段总超时开关(65=开启截断提速 9999=关闭不截断)
 SINGLE_SCAN_TIMEOUT = 9999
-# 原版扫描并发不变，保持原本1小时左右跑完
+
+# 还原你最初原版最快并发 奇数300 偶数100
 SCAN_WORKER_ODD = 300
 SCAN_WORKER_EVEN = 100
 
@@ -87,7 +89,7 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ===================== 单个IP检测 单IP超时单独跳过 =====================
+# ===================== 单个IP检测 单IP2秒超时单独跳过 =====================
 def check_ip_port(ip_port, url_end):    
     try:
         url = f"http://{ip_port}{url_end}"
@@ -96,10 +98,9 @@ def check_ip_port(ip_port, url_end):
         if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
             return ip_port
     except:
-        # 单个IP失败直接跳过，不影响整个网段
         return None
 
-# ===================== 扫描核心 不整段截断、不提前结束网段 =====================
+# ===================== 扫描核心 用你原版300/100并发 + 原版进度打印 =====================
 def scan_ip_port(ip, port, option, url_end):
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
@@ -123,7 +124,7 @@ def scan_ip_port(ip, port, option, url_end):
     executor.shutdown(wait=True)
     return valid_ip_ports
 
-# ===================== 旧存档IP重扫 原版不变 =====================
+# ===================== 旧存档IP重扫 =====================
 def check_old_single_ip(ip_port):
     res1 = check_ip_port(ip_port, "/stat")
     if res1:
@@ -133,7 +134,7 @@ def check_old_single_ip(ip_port):
         return ip_port
     return None
 
-# ===================== 逐省扫描 加异常捕获 绝不跳过网段 =====================
+# ===================== 逐省扫描 新旧IP合并不丢失 =====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
@@ -157,10 +158,11 @@ def multicast_province(config_file):
         with open(archive_path, "r", encoding="utf-8") as f:
             old_ip_list = [line.strip() for line in f if line.strip()]
         print(f"\n加载历史存档IP：{len(old_ip_list)} 个，开始重扫校验")
-        with ThreadPoolExecutor(max_workers=120) as exe:
+        with ThreadPoolExecutor(max_workers=60) as exe:
             out = exe.map(check_old_single_ip, old_ip_list)
             old_survive_ips = [x for x in out if x]
 
+    # 新IP+旧存活IP 去重合并
     all_final_ips = sorted(list(set(new_valid_ips + old_survive_ips)))
 
     print(f"\n{province} 汇总结果：")
@@ -168,21 +170,19 @@ def multicast_province(config_file):
     print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
     print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
+    # 写入当前省份IP文件
     with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as f:
         if all_final_ips:
             f.write("\n".join(all_final_ips))
 
     if not os.path.exists("ip"):
         os.mkdir("ip")
-    old_lines = []
-    if os.path.exists(archive_path):
-        with open(archive_path, "r", encoding="utf-8") as f:
-            old_lines = f.readlines()
-    for ip_port in new_valid_ips:
-        old_lines.append(ip_port + "\n")
-    old_lines = sorted(set(old_lines))
+        
+    # 同步更新存档文件
+    full_archive_ips = sorted(list(set(all_final_ips)))
     with open(archive_path, "w", encoding="utf-8") as f:
-        f.writelines(old_lines)
+        for ipa in full_archive_ips:
+            f.write(ipa + "\n")
 
     template_file = os.path.join('template', f"template_{province}.txt")
     if os.path.exists(template_file):
@@ -237,14 +237,13 @@ async def speed_sort_all_channels(channel_list):
 
     return final_list
 
-# ===================== 【修复版】TXT转M3U 加标准头部 播放器完美识别 =====================
+# ===================== TXT转M3U 标准头部 播放器完美识别 =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    with open(output_file, 'w', encoding="utf-8") as f:
-        # 关键修复：写入标准M3U文件头
+    with open(output_file, "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
         genre = ''
         for line in lines:
