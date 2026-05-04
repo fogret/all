@@ -3,12 +3,12 @@ from threading import Thread
 import os
 import time
 import datetime
+from datetime import datetime, timezone, timedelta
 import glob
 import socket
 import requests
 import aiohttp
 import asyncio
-from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===================== 全局稳定配置 直接改数字即可 =====================
@@ -316,7 +316,8 @@ def reorder_channel_content(origin_merge_text):
     all_channel_data = speed_sort_all_channels(all_channel_data)
 
     res = []
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    # 【已修复报错的时间代码】
+    now = datetime.now(timezone.utc) + timedelta(hours=8)
     time_str = now.strftime("%Y/%m/%d %H:%M")
     res.append("更新时间,#genre#\n")
     res.append(f"{time_str},http://127.0.0.1\n\n")
@@ -346,7 +347,7 @@ def main():
             if content.strip():
                 file_contents.append(content)
     
-    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    now = datetime.now(timezone.utc) + timedelta(hours=8)
     current_time = now.strftime("%Y/%m/%d %H:%M")
     origin_total = f"{current_time}更新,#genre#\n"
     origin_total += f"浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n"
