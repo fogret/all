@@ -53,7 +53,7 @@ def load_demo_order():
                         cate_chan[now_cate].append(line)
     return cate_order, cate_chan
 
-# ===================== 全新替换 你原版顶配真实拉流测速核心 =====================
+# ===================== 全新替换 顶配真实拉流测速核心 =====================
 def result_dict(url, result, last_data_elapsed):
     beijing_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
     now_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S %Z%z")
@@ -92,8 +92,12 @@ def test_udpxy_stream(url: str, test_duration: int = 8, chunk_size: int = 1024, 
 
     return result_dict(url, "OK Stable", last_data_time - start_time)
 
-# ===================== 批量并发测速 完美对接原项目 无改动 =====================
+# ===================== 批量并发测速 【已修复空列表报错】 =====================
 def speed_test_all_links(link_list):
+    # 修复：没有有效链接直接跳过，不创建0线程池报错
+    if not link_list:
+        return []
+        
     res_list = []
     max_workers = min(SPEED_CONCURRENCY, len(link_list))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -109,7 +113,7 @@ def speed_test_all_links(link_list):
     res_list.sort(key=lambda x: x["Score"], reverse=True)
     return res_list
 
-# ===================== 往下全部是你原来的完整源码 一字未改 全部保留 =====================
+# ===================== 往下全部原版源码 一字未改 =====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
