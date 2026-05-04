@@ -1,11 +1,8 @@
-# -*- coding: utf-8 -*-
 from threading import Thread
 import os
 import time
 import datetime
-from datetime import datetime, timezone, timedelta
 import glob
-import socket
 import requests
 import aiohttp
 import asyncio
@@ -212,68 +209,42 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 【全新替换：真实拉流H264稳流测速】只改这里 其他不动 =====================
-def test_real_stream_speed(url):
-    test_duration = 8
-    idle_threshold = 3.0
+# ===================== 异步测速排序 完全原版不变 =====================
+async def test_single_url(session, url):
     try:
-        response = requests.get(url, stream=True, timeout=(3, 1))
-        response.raise_for_status()
-    except requests.RequestException:
-        return url, 0.0
+        start = time.time()
+        async with session.get(url, timeout=SPEED_TIMEOUT) as r:
+            await r.read()
+            cost = round(time.time() - start, 3)
+        return url, cost
+    except:
+        return url, 999.9
 
-    response.raw.decode_content = False
-    start_time = time.time()
-    last_data_time = start_time
+async def speed_sort_all_channels(channel_list):
+    name_url_origin = channel_list.copy()
+    tasks = []
+    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY)
+    async with aiohttp.ClientSession(connector=conn) as session:
+        for _, url in name_url_origin:
+            tasks.append(test_single_url(session, url))
+        speed_res = await asyncio.gather(*tasks)
 
-    while time.time() - start_time < test_duration:
-        try:
-            chunk = response.raw.read(1024)
-            if chunk:
-                last_data_time = time.time()
-            else:
-                return url, round(last_data_time - start_time, 1)
-        except (socket.timeout, requests.exceptions.ReadTimeout):
-            pass
-        except Exception:
-            return url, round(last_data_time - start_time, 1)
-
-        if time.time() - last_data_time > idle_threshold:
-            return url, round(last_data_time - start_time, 1)
-
-    return url, 8.0
-
-def speed_sort_all_channels(channel_list):
-    if not channel_list:
-        return []
-    print("开始真实拉流测速检测，判断播放稳定性...")
-
-    # 多线程并发拉流测速
-    res_data = []
-    with ThreadPoolExecutor(max_workers=SPEED_CONCURRENCY) as exe:
-        futures = [exe.submit(test_real_stream_speed, url) for _, url in channel_list]
-        for fu in as_completed(futures):
-            res_data.append(fu.result())
-
-    # 按频道分组，同频道 稳定分数越高 排越前面
     group = {}
-    for name, url in channel_list:
+    for name, url in name_url_origin:
         if name not in group:
             group[name] = []
-    for url, score in res_data:
-        for n, u in channel_list:
+    for url, cost in speed_res:
+        for n, u in name_url_origin:
             if u == url:
-                group[n].append( (u, score) )
+                group[n].append( (u, cost) )
                 break
 
     final_list = []
-    for name, url_score_list in group.items():
-        # 稳定度倒序排序，最稳不断流排第一
-        url_score_list.sort(key=lambda x: x[1], reverse=True)
-        for u, _ in url_score_list:
+    for name, url_cost_list in group.items():
+        url_cost_list.sort(key=lambda x: x[1])
+        for u, _ in url_cost_list:
             final_list.append( (name, u) )
 
-    print("真实拉流测速排序完成，所有线路完整保留")
     return final_list
 
 # ===================== TXT转M3U 原版不变 =====================
@@ -312,12 +283,12 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append( (new_name, url.strip()) )
 
-    # 调用新的真实拉流测速排序
-    all_channel_data = speed_sort_all_channels(all_channel_data)
+    print("\n========== 开始异步测速排序，全部线路保留 ==========")
+    all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
+    print("========== 测速排序完成，无删除任何线路 ==========\n")
 
     res = []
-    # 【已修复报错的时间代码】
-    now = datetime.now(timezone.utc) + timedelta(hours=8)
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     time_str = now.strftime("%Y/%m/%d %H:%M")
     res.append("更新时间,#genre#\n")
     res.append(f"{time_str},http://127.0.0.1\n\n")
@@ -347,7 +318,7 @@ def main():
             if content.strip():
                 file_contents.append(content)
     
-    now = datetime.now(timezone.utc) + timedelta(hours=8)
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     current_time = now.strftime("%Y/%m/%d %H:%M")
     origin_total = f"{current_time}更新,#genre#\n"
     origin_total += f"浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n"
@@ -359,7 +330,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 真实拉流测速排序完毕，所有线路完整保留 =====")
+    print("\n===== 全部执行完成 测速排序完毕，所有线路完整保留 =====")
 
 if __name__ == "__main__":
     main()
