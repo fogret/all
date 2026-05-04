@@ -17,8 +17,8 @@ SPEED_TIMEOUT = 3.0
 # 取消网段整体强制超时结束，只单IP超时跳过
 SINGLE_SCAN_TIMEOUT = 9999
 # 原版扫描并发不变，保持原本1小时左右跑完
-SCAN_WORKER_ODD = 220
-SCAN_WORKER_EVEN = 90
+SCAN_WORKER_ODD = 300
+SCAN_WORKER_EVEN = 100
 
 # ===================== 别名分类加载 完全原版不动 =====================
 def load_alias_map():
