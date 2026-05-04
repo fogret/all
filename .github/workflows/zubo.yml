@@ -2,7 +2,7 @@ name: zubo
 
 on:
   schedule:
-    - cron: '0 11 */3 * *'
+    - cron: '0 11 * * *'
   workflow_dispatch:
 
 # 核心权限，专治403拒绝推送
