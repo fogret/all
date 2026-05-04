@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -- coding: utf-8 --
 import os
 import time
 import requests
@@ -7,11 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 # 低配稳跑 不卡死
 THREAD_NUM = 30
 TIMEOUT = 1.5
-SAVE_FOLDER = "ip_scan"
+SAVEFOLDER = "ipscan"
 SCAN_PORTS = ["4000","4022","8188","8800"]
 
 # 你原版全部网段 原样不动
-PROVINCE_IP_SEG = [
+PROVINCEIPSEG = [
     ("北京", "219.142"),("天津", "60.28"),("河北", "60.6"),
     ("山西", "59.49"),("内蒙古", "1.24"),("辽宁", "61.133"),
     ("吉林", "58.154"),("黑龙江", "112.100"),("上海", "116.228"),
@@ -67,15 +67,15 @@ def scan_prov(prov, ab):
     return alive
 
 def main():
-    if not os.path.exists(SAVE_FOLDER):
-        os.mkdir(SAVE_FOLDER)
+    if not os.path.exists(SAVEFOLDER):
+        os.mkdir(SAVEFOLDER)
 
     # 开局立刻打印，马上出日志
     print("===== 程序正常启动，开始扫描 =====")
 
-    for prov, ab in PROVINCE_IP_SEG:
+    for prov, ab in PROVINCEIPSEG:
         data = scan_prov(prov, ab)
-        path = os.path.join(SAVE_FOLDER, f"{prov}_config.txt")
+        path = os.path.join(SAVEFOLDER, f"{prov}_config.txt")
         with open(path, "w", encoding="utf-8") as f:
             for line in data:
                 f.write(line + ",12\n")
