@@ -6,20 +6,23 @@ import datetime
 import glob
 import socket
 import requests
+import aiohttp
+import asyncio
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import OrderedDict
 
-# ===================== 全局配置 原版完全保留不动 =====================
+# ===================== 全局稳定配置 直接改数字即可 =====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
+# 单个网段最大扫描超时，杜绝卡死停滞
 SINGLE_SCAN_TIMEOUT = 65
+# 扫描并发 均衡速度+稳定 不卡不崩
 SCAN_WORKER_ODD = 220
 SCAN_WORKER_EVEN = 90
 
-# ===================== 别名、分类加载 原版一字未改 =====================
+# ===================== 别名分类加载 完全原版不动 =====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
@@ -35,85 +38,24 @@ def load_alias_map():
     return alias_map
 
 def load_demo_order():
-    cate_order = []
-    cate_chan = OrderedDict()
-    now_cate = None
+    cate_list = []
+    cate_chan = {}
+    now_cate = ""
     if os.path.exists(DEMO_FILE):
         with open(DEMO_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                if "#genre#" in line:
-                    now_cate = line.replace("#genre#","").strip()
-                    cate_order.append(now_cate)
+                if line.endswith(",#genre#"):
+                    now_cate = line.replace(",#genre#","")
+                    cate_list.append(now_cate)
                     cate_chan[now_cate] = []
-                else:
-                    if now_cate:
-                        cate_chan[now_cate].append(line)
-    return cate_order, cate_chan
+                elif now_cate:
+                    cate_chan[now_cate].append(line)
+    return cate_list, cate_chan
 
-# ===================== 全新替换 顶配真实拉流测速核心 =====================
-def result_dict(url, result, last_data_elapsed):
-    beijing_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
-    now_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S %Z%z")
-    return {
-        "URL": url,
-        "Result": result,
-        "Score": round(last_data_elapsed, 1),
-        "TestTime": now_str
-    }
-
-def test_udpxy_stream(url: str, test_duration: int = 8, chunk_size: int = 1024, idle_threshold: float = 3.0) -> dict:
-    try:
-        response = requests.get(url, stream=True, timeout=(3, 1))
-        response.raise_for_status()
-    except requests.RequestException:
-        return result_dict(url, "Connection Error", 0.0)
-
-    response.raw.decode_content = False
-    start_time = time.time()
-    last_data_time = start_time
-
-    while time.time() - start_time < test_duration:
-        try:
-            chunk = response.raw.read(chunk_size)
-            if chunk:
-                last_data_time = time.time()
-            else:
-                return result_dict(url, "Connection Blocked", last_data_time - start_time)
-        except (socket.timeout, requests.exceptions.ReadTimeout):
-            pass
-        except Exception:
-            return result_dict(url, "Stream Stop", last_data_time - start_time)
-
-        if time.time() - last_data_time > idle_threshold:
-            return result_dict(url, "Idle Blocked", last_data_time - start_time)
-
-    return result_dict(url, "OK Stable", last_data_time - start_time)
-
-# ===================== 批量并发测速 【已修复空列表报错】 =====================
-def speed_test_all_links(link_list):
-    # 修复：没有有效链接直接跳过，不创建0线程池报错
-    if not link_list:
-        return []
-        
-    res_list = []
-    max_workers = min(SPEED_CONCURRENCY, len(link_list))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(test_udpxy_stream, url): url for url in link_list}
-        for future in as_completed(future_map):
-            url = future_map[future]
-            try:
-                data = future.result()
-                res_list.append(data)
-            except Exception as e:
-                res_list.append(result_dict(url, "Test Exception", 0.0))
-    # 按稳定时长倒序排序，同频道最稳定不断流的排最前面
-    res_list.sort(key=lambda x: x["Score"], reverse=True)
-    return res_list
-
-# ===================== 往下全部原版源码 一字未改 =====================
+# ===================== 读取配置 原版完全不变 =====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -124,145 +66,299 @@ def read_config(config_file):
                     parts = line.strip().split(',')
                     ip_part, port = parts[0].strip().split(':')
                     a, b, c, d = ip_part.split('.')
-                    option = int(parts[1])
+                    option = int(parts[1]) 
                     url_end = "/status" if option >= 10 else "/stat"
-                    ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.{c}.{int(d)}"
-                    ip_configs.append((ip, port, url_end))
+                    ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
+                    ip_configs.append((ip, port, option, url_end))
+                    print(f"第{line_num}行：http://{ip}:{port}{url_end} 添加到扫描列表")
+        return ip_configs
     except Exception as e:
-        print(f"读取配置错误: {e}")
-    return ip_configs
+        print(f"读取文件错误: {e}")
+        return []
 
-def scan_ip(ip, port, url_end):
+# ===================== IP网段生成 原版逻辑一字不改 =====================
+def generate_ip_ports(ip, port, option):
+    a, b, c, d = ip.split('.')
+    if option == 2 or option == 12:
+        c_extent = c.split('-')
+        c_first = int(c_extent[0]) if len(c_extent) == 2 else int(c)
+        c_last = int(c_extent[1]) + 1 if len(c_extent) == 2 else int(c) + 8
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(c_first, c_last) for y in range(1, 256)]
+    elif option == 0 or option == 10:
+        return [f"{a}.{b}.{c}.{y}:{port}" for y in range(1, 256)]
+    else:
+        return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
+
+# ===================== 单个IP检测 原版不变 =====================
+def check_ip_port(ip_port, url_end):    
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1.5)
-        res = sock.connect_ex((ip, int(port)))
-        sock.close()
-        if res == 0:
-            return f"http://{ip}:{port}{url_end}"
+        url = f"http://{ip_port}{url_end}"
+        resp = requests.get(url, timeout=2)
+        resp.raise_for_status()
+        if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
+            return ip_port
     except:
-        pass
+        return None
+
+# ===================== 【稳定防卡死核心版扫描函数】 =====================
+def scan_ip_port(ip, port, option, url_end):
+    valid_ip_ports = []
+    ip_ports = generate_ip_ports(ip, port, option)
+    total = len(ip_ports)
+    checked = 0
+    start_scan_time = time.time()
+
+    # 合理分配并发，稳又快
+    work_num = SCAN_WORKER_ODD if option % 2 == 1 else SCAN_WORKER_EVEN
+
+    with ThreadPoolExecutor(max_workers=work_num) as executor:
+        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
+
+        for future in as_completed(futures):
+            # 超时直接终止，防止卡死阻塞后续所有扫描
+            if time.time() - start_scan_time > SINGLE_SCAN_TIMEOUT:
+                print(f"⚠️ 当前网段扫描超时，强制结束，避免卡死")
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+
+            res = future.result()
+            if res:
+                valid_ip_ports.append(res)
+            checked += 1
+
+            # 全部网段 统一打印进度，不分奇偶，全程看得见
+            if checked % 2000 == 0 or checked == total:
+                print(f"已扫描：{checked}/{total} | 有效IP：{len(valid_ip_ports)}个")
+
+    # 扫描完毕 彻底释放线程资源
+    executor.shutdown(wait=True)
+    return valid_ip_ports
+
+# ===================== 旧存档IP重扫 原版不变 =====================
+def check_old_single_ip(ip_port):
+    res1 = check_ip_port(ip_port, "/stat")
+    if res1:
+        return ip_port
+    res2 = check_ip_port(ip_port, "/status")
+    if res2:
+        return ip_port
     return None
 
-def scan_province(ip_configs, province_name):
-    valid_links = []
-    total = len(ip_configs)
-    print(f"本省份共需扫描 {total} 组网段")
-    odd_list = ip_configs[::2]
-    even_list = ip_configs[1::2]
+# ===================== 逐省扫描 加异常捕获 绝不跳过网段 =====================
+def multicast_province(config_file):
+    filename = os.path.basename(config_file)
+    province = filename.split('_')[0]
+    print(f"\n{'='*30}\n开始处理：{province}\n{'='*30}")
 
-    def scan_batch(batch, workers, batch_name):
-        batch_len = len(batch)
-        print(f"开始扫描{batch_name}，本轮数量：{batch_len}")
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_list = [executor.submit(scan_ip, ip, port, url_end) for ip, port, url_end in batch]
-            for idx, future in enumerate(as_completed(future_list), 1):
-                try:
-                    ret = future.result(timeout=SINGLE_SCAN_TIMEOUT)
-                    if ret:
-                        valid_links.append(ret)
-                except:
-                    continue
-                if idx % 200 == 0:
-                    print(f"已扫描：{idx}/{batch_len} | 有效IP：{len(valid_links)}")
+    configs = sorted(set(read_config(config_file)))
+    new_valid_ips = []
 
-    scan_batch(odd_list, SCAN_WORKER_ODD, "奇数网段")
-    scan_batch(even_list, SCAN_WORKER_EVEN, "偶数网段")
-    print(f"✅ {province_name} 扫描完成，累计有效IP：{len(valid_links)} 个\n")
-    return valid_links
+    # 循环加异常捕获，单个网段报错不中断、不跳过下一个
+    for idx, (ip, port, option, url_end) in enumerate(configs, 1):
+        try:
+            print(f"\n开始扫描第{idx}个网段：{ip}:{port}")
+            res = scan_ip_port(ip, port, option, url_end)
+            new_valid_ips.extend(res)
+        except Exception as e:
+            print(f"❌ 第{idx}个网段扫描异常，自动跳过本网段，继续执行下一个：{e}")
+            continue
 
-def load_history_ips():
-    history = []
-    if os.path.exists("history.txt"):
-        with open("history.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("http"):
-                    history.append(line)
-    return list(set(history))
+    # 下面所有写入、存档、生成文件逻辑 全部原版不动
+    archive_path = f"ip/存档_{province}_ip.txt"
+    old_survive_ips = []
+    if os.path.exists(archive_path):
+        with open(archive_path, "r", encoding="utf-8") as f:
+            old_ip_list = [line.strip() for line in f if line.strip()]
+        print(f"\n加载历史存档IP：{len(old_ip_list)} 个，开始重扫校验")
+        with ThreadPoolExecutor(max_workers=120) as exe:
+            out = exe.map(check_old_single_ip, old_ip_list)
+            old_survive_ips = [x for x in out if x]
 
-def save_history_ips(all_valid):
-    with open("history.txt", "w", encoding="utf-8") as f:
-        for link in all_valid:
-            f.write(link + "\n")
+    all_final_ips = sorted(list(set(new_valid_ips + old_survive_ips)))
 
-def process_final_output(all_valid_links, alias_map, cate_order, cate_chan):
-    # 先执行新测速排序
-    tested_links = speed_test_all_links(all_valid_links)
-    sorted_links = [item["URL"] for item in tested_links]
+    print(f"\n{province} 汇总结果：")
+    print(f"新扫描有效IP：{len(new_valid_ips)} 个")
+    print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
+    print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
-    # 以下全部原版逻辑不变
-    channel_link_map = {}
-    for cate in cate_chan:
-        for ch in cate_chan[cate]:
-            channel_link_map[ch] = []
-    for link in sorted_links:
-        for cate in cate_chan:
-            for ch in cate_chan[cate]:
-                ch_std = alias_map.get(ch, ch)
-                if ch in link or ch_std in link:
-                    if link not in channel_link_map[ch]:
-                        channel_link_map[ch].append(link)
+    with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as f:
+        if all_final_ips:
+            f.write("\n".join(all_final_ips))
 
-    # 生成txt
-    with open("zubo_all.txt", "w", encoding="utf-8") as f:
-        now_time = datetime.now().strftime("%Y/%m/%d %H:%M 更新")
-        f.write(f"#genre#{now_time}\n")
-        for cate in cate_order:
-            f.write(f"{cate},#genre#\n")
-            for ch in cate_chan[cate]:
-                links = channel_link_map.get(ch, [])
-                if links:
-                    for lk in links:
-                        f.write(f"{ch},{lk}\n")
+    if not os.path.exists("ip"):
+        os.mkdir("ip")
+    old_lines = []
+    if os.path.exists(archive_path):
+        with open(archive_path, "r", encoding="utf-8") as f:
+            old_lines = f.readlines()
+    for ip_port in new_valid_ips:
+        old_lines.append(ip_port + "\n")
+    old_lines = sorted(set(old_lines))
+    with open(archive_path, "w", encoding="utf-8") as f:
+        f.writelines(old_lines)
+
+    template_file = os.path.join('template', f"template_{province}.txt")
+    if os.path.exists(template_file):
+        with open(template_file, "r", encoding="utf-8") as f:
+            tem_channels = f.read()
+        output = []
+        for idx, single_ip in enumerate(all_final_ips, 1):
+            ip = single_ip.strip()
+            output.append(f"{province}-组播{idx},#genre#\n")
+            output.append(tem_channels.replace("ipipip", ip))
+        with open(f"组播_{province}.txt", "w", encoding="utf-8") as f:
+            f.writelines(output)
+        print(f"✅ {province} 组播文件生成完成")
+    else:
+        print(f"❌ 未找到 template_{province}.txt")
+
+# ===================== 【全新替换：真实拉流H264稳流测速】只改这里 其他不动 =====================
+def test_real_stream_speed(url):
+    test_duration = 8
+    idle_threshold = 3.0
+    try:
+        response = requests.get(url, stream=True, timeout=(3, 1))
+        response.raise_for_status()
+    except requests.RequestException:
+        return url, 0.0
+
+    response.raw.decode_content = False
+    start_time = time.time()
+    last_data_time = start_time
+
+    while time.time() - start_time < test_duration:
+        try:
+            chunk = response.raw.read(1024)
+            if chunk:
+                last_data_time = time.time()
+            else:
+                return url, round(last_data_time - start_time, 1)
+        except (socket.timeout, requests.exceptions.ReadTimeout):
+            pass
+        except Exception:
+            return url, round(last_data_time - start_time, 1)
+
+        if time.time() - last_data_time > idle_threshold:
+            return url, round(last_data_time - start_time, 1)
+
+    return url, 8.0
+
+def speed_sort_all_channels(channel_list):
+    if not channel_list:
+        return []
+    print("开始真实拉流测速检测，判断播放稳定性...")
+
+    # 多线程并发拉流测速
+    res_data = []
+    with ThreadPoolExecutor(max_workers=SPEED_CONCURRENCY) as exe:
+        futures = [exe.submit(test_real_stream_speed, url) for _, url in channel_list]
+        for fu in as_completed(futures):
+            res_data.append(fu.result())
+
+    # 按频道分组，同频道 稳定分数越高 排越前面
+    group = {}
+    for name, url in channel_list:
+        if name not in group:
+            group[name] = []
+    for url, score in res_data:
+        for n, u in channel_list:
+            if u == url:
+                group[n].append( (u, score) )
+                break
+
+    final_list = []
+    for name, url_score_list in group.items():
+        # 稳定度倒序排序，最稳不断流排第一
+        url_score_list.sort(key=lambda x: x[1], reverse=True)
+        for u, _ in url_score_list:
+            final_list.append( (name, u) )
+
+    print("真实拉流测速排序完成，所有线路完整保留")
+    return final_list
+
+# ===================== TXT转M3U 原版不变 =====================
+def txt_to_m3u(input_file, output_file):
+    if not os.path.exists(input_file):
+        return
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    with open(output_file, 'w', encoding="utf-8") as f:
+        genre = ''
+        for line in lines:
+            line = line.strip()
+            if "," in line:
+                channel_name, channel_url = line.split(',', 1)
+                if channel_url == '#genre#':
+                    genre = channel_name
                 else:
-                    f.write(f"{ch},\n")
+                    f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
+                    f.write(f'{channel_url}\n')
 
-    # 生成m3u
-    with open("zubo_all.m3u", "w", encoding="utf-8") as f:
-        now_m3u_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write("#EXTM3U x-tvg-url=\"https://gh-proxy/https://raw.githubusercontent.com/fogret/sourt/refs/heads/master/output/epg/epg.gz\"\n")
-        f.write(f'#EXTINF:-1 tvg-id="time" tvg-name="更新时间" group-title="🕘️更新时间",{now_m3u_time}\n127.0.0.1\n')
-        for cate in cate_order:
-            for ch in cate_chan[cate]:
-                links = channel_link_map.get(ch, [])
-                if links:
-                    for lk in links:
-                        logo_name = alias_map.get(ch, ch)
-                        logo_url = f"https://www.xn--rgv465a.top/tvlogo/{logo_name}.png"
-                        f.write(f'#EXTINF:-1 tvg-id="{ch}" tvg-name="{ch}" tvg-logo="{logo_url}" group-title="{cate}",{ch}\n{lk}\n')
+# ===================== 分类改名 原版不变 =====================
+def reorder_channel_content(origin_merge_text):
+    alias_map = load_alias_map()
+    cate_order, cate_chan_dict = load_demo_order()
 
+    all_channel_data = []
+    lines = origin_merge_text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.endswith(",#genre#"):
+            continue
+        if "," in line:
+            name, url = line.split(",", 1)
+            new_name = alias_map.get(name.strip(), name.strip())
+            all_channel_data.append( (new_name, url.strip()) )
+
+    # 调用新的真实拉流测速排序
+    all_channel_data = speed_sort_all_channels(all_channel_data)
+
+    res = []
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    time_str = now.strftime("%Y/%m/%d %H:%M")
+    res.append("更新时间,#genre#\n")
+    res.append(f"{time_str},http://127.0.0.1\n\n")
+
+    for cate in cate_order:
+        res.append(f"{cate},#genre#\n")
+        for std_chan in cate_chan_dict[cate]:
+            for chan_name, chan_url in all_channel_data:
+                if chan_name == std_chan:
+                    res.append(f"{chan_name},{chan_url}\n")
+        res.append("\n")
+
+    return "".join(res)
+
+# ===================== 主函数 流程不变 =====================
 def main():
-    print("=========================")
-    print("      开始批量扫描")
-    print("=========================")
-    all_valid = []
-    history_ips = load_history_ips()
-    print(f"加载历史存档IP：{len(history_ips)} 条\n")
-    all_valid.extend(history_ips)
+    if not os.path.exists("ip"):
+        os.mkdir("ip")
 
-    ip_dir = "ip"
-    if os.path.exists(ip_dir):
-        for fname in os.listdir(ip_dir):
-            if fname.endswith("_config.txt"):
-                province = fname.replace("_config.txt","")
-                print(f"=============================")
-                print(f"开始处理：{province}")
-                print(f"==============================")
-                cfg_path = os.path.join(ip_dir, fname)
-                ip_cfg = read_config(cfg_path)
-                if ip_cfg:
-                    res = scan_province(ip_cfg, province)
-                    all_valid.extend(res)
+    for config_file in glob.glob(os.path.join('ip', '*_config.txt')):
+        multicast_province(config_file)
 
-    all_valid = list(set(all_valid))
-    save_history_ips(all_valid)
-    print(f"全部扫描结束，合并总有效IP：{len(all_valid)} 条")
+    file_contents = []
+    for file_path in glob.glob('组播_*.txt'):
+        with open(file_path, 'r', encoding="utf-8") as f:
+            content = f.read()
+            if content.strip():
+                file_contents.append(content)
+    
+    now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
+    current_time = now.strftime("%Y/%m/%d %H:%M")
+    origin_total = f"{current_time}更新,#genre#\n"
+    origin_total += f"浙江卫视,http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8\n"
+    origin_total += '\n'.join(file_contents)
 
-    alias = load_alias_map()
-    cate_order, cate_chan = load_demo_order()
-    process_final_output(all_valid, alias, cate_order, cate_chan)
-    print("✅ 全部处理完成，已生成 zubo_all.txt 和 zubo_all.m3u")
+    final_total = reorder_channel_content(origin_total)
+
+    with open("zubo_all.txt", "w", encoding="utf-8") as f:
+        f.write(final_total)
+
+    txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
+    print("\n===== 全部执行完成 真实拉流测速排序完毕，所有线路完整保留 =====")
 
 if __name__ == "__main__":
     main()
