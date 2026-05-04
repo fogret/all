@@ -14,13 +14,11 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
-# 单个网段超时拉长，避免误杀
-SINGLE_SCAN_TIMEOUT = 200
-# 降低并发，GitHub云端稳跑不拥堵、不虚假超时
-SCAN_WORKER_ODD = 60
-SCAN_WORKER_EVEN = 30
-# 固定每批扫描2000个，严格分批不堆线程
-BATCH_SCAN_NUM = 2000
+# 取消网段整体强制超时结束，只单IP超时跳过
+SINGLE_SCAN_TIMEOUT = 9999
+# 原版扫描并发不变，保持原本1小时左右跑完
+SCAN_WORKER_ODD = 220
+SCAN_WORKER_EVEN = 90
 
 # ===================== 别名分类加载 完全原版不动 =====================
 def load_alias_map():
@@ -89,7 +87,7 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ===================== 单个IP检测 原版不变 =====================
+# ===================== 单个IP检测 单IP超时单独跳过 =====================
 def check_ip_port(ip_port, url_end):    
     try:
         url = f"http://{ip_port}{url_end}"
@@ -98,42 +96,31 @@ def check_ip_port(ip_port, url_end):
         if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
             return ip_port
     except:
+        # 单个IP失败直接跳过，不影响整个网段
         return None
 
-# ===================== 【核心修复：分批扫描 2000一批 不堆线程 不虚假超时】 =====================
+# ===================== 扫描核心 不整段截断、不提前结束网段 =====================
 def scan_ip_port(ip, port, option, url_end):
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
     total = len(ip_ports)
-    start_scan_time = time.time()
+    checked = 0
 
     work_num = SCAN_WORKER_ODD if option % 2 == 1 else SCAN_WORKER_EVEN
 
-    # 按2000个严格切分批次，一批跑完再跑下一批，不会线程堆积阻塞
-    for i in range(0, total, BATCH_SCAN_NUM):
-        batch_list = ip_ports[i:i+BATCH_SCAN_NUM]
-        batch_checked = 0
+    with ThreadPoolExecutor(max_workers=work_num) as executor:
+        futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in ip_ports}
 
-        # 每一批单独新建线程池，跑完立刻销毁释放，不累积占用
-        with ThreadPoolExecutor(max_workers=work_num) as executor:
-            futures = {executor.submit(check_ip_port, ip_port, url_end): ip_port for ip_port in batch_list}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                valid_ip_ports.append(res)
+            checked += 1
 
-            for future in as_completed(futures):
-                # 全局超时判断，只卡总时长，不提前乱杀
-                if time.time() - start_scan_time > SINGLE_SCAN_TIMEOUT:
-                    print(f"⚠️ 当前网段总时长超时，强制结束本网段")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return valid_ip_ports
+            if checked % 2000 == 0 or checked == total:
+                print(f"已扫描：{checked}/{total} | 有效IP：{len(valid_ip_ports)}个")
 
-                res = future.result()
-                if res:
-                    valid_ip_ports.append(res)
-                batch_checked += 1
-
-        # 每跑完一整批再打印进度，不再乱计数、虚假跳大数
-        already_all_checked = i + batch_checked
-        print(f"已扫描：{already_all_checked}/{total} | 有效IP：{len(valid_ip_ports)}个")
-
+    executor.shutdown(wait=True)
     return valid_ip_ports
 
 # ===================== 旧存档IP重扫 原版不变 =====================
@@ -170,7 +157,7 @@ def multicast_province(config_file):
         with open(archive_path, "r", encoding="utf-8") as f:
             old_ip_list = [line.strip() for line in f if line.strip()]
         print(f"\n加载历史存档IP：{len(old_ip_list)} 个，开始重扫校验")
-        with ThreadPoolExecutor(max_workers=80) as exe:
+        with ThreadPoolExecutor(max_workers=120) as exe:
             out = exe.map(check_old_single_ip, old_ip_list)
             old_survive_ips = [x for x in out if x]
 
@@ -212,7 +199,7 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 异步测速排序 完全原版不动 =====================
+# ===================== 异步测速排序 完全原版不变 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
@@ -250,13 +237,15 @@ async def speed_sort_all_channels(channel_list):
 
     return final_list
 
-# ===================== TXT转M3U 原版不变 =====================
+# ===================== 【修复版】TXT转M3U 加标准头部 播放器完美识别 =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     with open(output_file, 'w', encoding="utf-8") as f:
+        # 关键修复：写入标准M3U文件头
+        f.write("#EXTM3U\n")
         genre = ''
         for line in lines:
             line = line.strip()
