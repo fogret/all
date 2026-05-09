@@ -24,6 +24,11 @@ SINGLE_SCAN_TIMEOUT = 9999
 SCAN_WORKER_ODD = 300
 SCAN_WORKER_EVEN = 100
 
+# 新增：udpxy节点类型标记 长效/临时识别
+# 长期稳定、跨零点不掉线 = 1  临时零点失效节点 = 0
+LONG_LIVE_WEIGHT = 1
+TEMP_WEIGHT = 0
+
 # ===================== 别名分类加载 完全原版不动 =====================
 def load_alias_map():
     alias_map = {}
@@ -201,6 +206,29 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
+# ===================== 【新增】udpxy节点长效/临时类型检测 =====================
+async def check_node_type(session, ip_port):
+    # 长效节点特征识别：常驻服务器、稳定无夜间清权
+    check_url1 = f"http://{ip_port}/status"
+    check_url2 = f"http://{ip_port}/stat"
+    try:
+        async with session.get(check_url1, timeout=2.0) as r:
+            text = await r.text()
+            # 匹配官方长效udpxy特征
+            if "daemon" in text.lower() and "idle" in text.lower():
+                return ip_port, LONG_LIVE_WEIGHT
+    except:
+        pass
+    try:
+        async with session.get(check_url2, timeout=2.0) as r:
+            text = await r.text()
+            if "daemon" in text.lower() and "idle" in text.lower():
+                return ip_port, LONG_LIVE_WEIGHT
+    except:
+        pass
+    # 不满足特征判定为临时零点失效节点
+    return ip_port, TEMP_WEIGHT
+
 # ===================== 【仅新增：带宽+延迟 同时检测】原函数结构完全不变 =====================
 async def test_single_url(session, url):
     try:
@@ -222,33 +250,50 @@ async def test_single_url(session, url):
     except:
         return url, 999.9, 0.0
 
-# ===================== 测速排序 新增带宽权重 原逻辑不变 全部保留线路 =====================
+# ===================== 测速排序 新增节点类型权重 优先级：长效>带宽>延迟 全保留线路 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
+    type_tasks = []
     conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY)
+
+    # 提取所有唯一转发IP，做节点类型识别
+    ip_set = set()
+    url_ip_map = {}
+    for name, url in name_url_origin:
+        ip_port = url.split('/rtp/')[0].replace('http://','')
+        ip_set.add(ip_port)
+        url_ip_map[url] = ip_port
+
     async with aiohttp.ClientSession(connector=conn) as session:
+        # 批量检测节点类型
+        for ip in ip_set:
+            type_tasks.append(check_node_type(session, ip))
+        type_res = await asyncio.gather(*type_tasks)
+        node_type_dict = {ip:w for ip,w in type_res}
+
+        # 批量测速
         for _, url in name_url_origin:
             tasks.append(test_single_url(session, url))
         speed_res = await asyncio.gather(*tasks)
 
+    # 分组汇总数据
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
-    # 带回传带宽+延迟
     for url, cost, bw in speed_res:
         for n, u in name_url_origin:
             if u == url:
-                group[n].append( (u, cost, bw) )
+                node_w = node_type_dict.get(url_ip_map[url], TEMP_WEIGHT)
+                group[n].append( (u, cost, bw, node_w) )
                 break
 
     final_list = []
-    # 排序规则：先带宽从大到小，再延迟从小到大
-    for name, url_cost_bw_list in group.items():
-        # 核心排序：带宽越高越靠前，同带宽延迟越快越靠前
-        url_cost_bw_list.sort(key=lambda x: (-x[2], x[1]))
-        for u, _, _ in url_cost_bw_list:
+    # 最终排序：1.长效节点优先 2.带宽从高到低 3.延迟从小到大
+    for name, url_info_list in group.items():
+        url_info_list.sort(key=lambda x: (-x[3], -x[2], x[1]))
+        for u, _, _, _ in url_info_list:
             final_list.append( (name, u) )
 
     return final_list
@@ -290,9 +335,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append( (new_name, url.strip()) )
 
-    print("\n========== 开始异步测速+带宽检测排序，全部线路保留 ==========")
+    print("\n========== 节点类型识别+异步测速+带宽检测排序，全部线路保留 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 带宽+延迟综合排序完成，无删除任何线路 ==========\n")
+    print("========== 长效节点优先排序完成，无删除任何线路 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -337,7 +382,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 带宽+测速排序完毕，所有线路完整保留 =====")
+    print("\n===== 全部执行完成 长效节点优先+带宽+测速排序完毕，所有线路完整保留 =====")
 
 if __name__ == "__main__":
     main()
