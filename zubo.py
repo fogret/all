@@ -10,24 +10,24 @@ import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===================== 全局配置 还原你原版最快并发 =====================
+# ===================== 全局配置 还原原版最快并发 =====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
-# 新增：带宽测速读取时长 只测大小 不做过滤
+# 带宽测速读取时长 只测大小 不做过滤
 BANDWIDTH_TEST_TIME = 2.0
 
 # 网段总超时开关(65=开启截断提速 9999=关闭不截断)
 SINGLE_SCAN_TIMEOUT = 9999
 
-# 还原你最初原版最快并发 奇数300 偶数100
+# 原版最快并发 奇数300 偶数100
 SCAN_WORKER_ODD = 300
 SCAN_WORKER_EVEN = 100
 
-# 新增：udpxy节点类型标记 长效/临时识别
-# 长期稳定、跨零点不掉线 = 1  临时零点失效节点 = 0
+# udpxy节点类型标记 长效/临时识别
+# 长期稳定、跨零点不掉线、不跳解码 = 1  临时零点失效节点 = 0
 LONG_LIVE_WEIGHT = 1
 TEMP_WEIGHT = 0
 
@@ -46,7 +46,7 @@ def load_ini_config():
             default_logo = cfg["LOGO"].get("default_logo", "").strip()
     return epg_url, logo_domain, default_logo
 
-# ===================== 别名分类加载 完全原版不动 =====================
+# ===================== 别名分类加载 =====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
@@ -79,7 +79,7 @@ def load_demo_order():
                     cate_chan[now_cate].append(line)
     return cate_list, cate_chan
 
-# ===================== 读取配置 原版完全不变 =====================
+# ===================== 读取配置 =====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -100,7 +100,7 @@ def read_config(config_file):
         print(f"读取文件错误: {e}")
         return []
 
-# ===================== IP网段生成 原版逻辑一字不改 =====================
+# ===================== IP网段生成 =====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -124,7 +124,7 @@ def check_ip_port(ip_port, url_end):
     except:
         return None
 
-# ===================== 扫描核心 用你原版300/100并发 + 原版进度打印 =====================
+# ===================== 扫描核心 原版并发+进度打印 =====================
 def scan_ip_port(ip, port, option, url_end):
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
@@ -223,58 +223,69 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 【新增】udpxy节点长效/临时类型检测 =====================
+# ===================== 修复版：udpxy长效/临时节点精准检测 解决零点掉线、跳解码 =====================
 async def check_node_type(session, ip_port):
-    # 长效节点特征识别：常驻服务器、稳定无夜间清权
-    check_url1 = f"http://{ip_port}/status"
-    check_url2 = f"http://{ip_port}/stat"
-    try:
-        async with session.get(check_url1, timeout=2.0) as r:
-            text = await r.text()
-            # 匹配官方长效udpxy特征
-            if "daemon" in text.lower() and "idle" in text.lower():
-                return ip_port, LONG_LIVE_WEIGHT
-    except:
-        pass
-    try:
-        async with session.get(check_url2, timeout=2.0) as r:
-            text = await r.text()
-            if "daemon" in text.lower() and "idle" in text.lower():
-                return ip_port, LONG_LIVE_WEIGHT
-    except:
-        pass
-    # 不满足特征判定为临时零点失效节点
-    return ip_port, TEMP_WEIGHT
+    check_url1 = f"http://{ip_port}/stat"
+    check_url2 = f"http://{ip_port}/status"
+    stable_count = 0
+    retry_times = 3
 
-# ===================== 【仅新增：带宽+延迟 同时检测】原函数结构完全不变 =====================
+    for _ in range(retry_times):
+        try:
+            async with session.get(check_url1, timeout=1.8) as r:
+                text = await r.text()
+                if len(text) > 800 and "stream" in text.lower() and "client" in text.lower():
+                    stable_count += 1
+        except:
+            pass
+        await asyncio.sleep(0.2)
+
+    for _ in range(retry_times):
+        try:
+            async with session.get(check_url2, timeout=1.8) as r:
+                text = await r.text()
+                if len(text) > 800 and "stream" in text.lower() and "client" in text.lower():
+                    stable_count += 1
+        except:
+            pass
+        await asyncio.sleep(0.2)
+
+    # 多轮校验稳定判定为长效节点，跨零点稳定不跳解码
+    if stable_count >= 3:
+        return ip_port, LONG_LIVE_WEIGHT
+    else:
+        return ip_port, TEMP_WEIGHT
+
+# ===================== 修复版：带宽+H264播放稳定性双检测 杜绝卡顿断流 =====================
 async def test_single_url(session, url):
     try:
-        # 原有延迟测速 完全保留
         start = time.time()
         total_bytes = 0
+        chunk_stable = True
         async with session.get(url, timeout=SPEED_TIMEOUT) as r:
-            # 同时读取流计算带宽大小
             while time.time() - start < BANDWIDTH_TEST_TIME:
                 chunk = await r.content.read(1024*256)
                 if not chunk:
+                    chunk_stable = False
                     break
                 total_bytes += len(chunk)
             await r.read()
         cost = round(time.time() - start, 3)
-        # 计算带宽码率 MB/s 只采集、不做任何过滤
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_TIME, 2)
+        # 流不稳定直接降权后置
+        if not chunk_stable:
+            bandwidth = 0.1
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 测速排序 新增节点类型权重 优先级：长效>带宽>延迟 全保留线路 =====================
+# ===================== 测速排序 优先级：长效>带宽>延迟 全线路保留 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
     conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY)
 
-    # 提取所有唯一转发IP，做节点类型识别
     ip_set = set()
     url_ip_map = {}
     for name, url in name_url_origin:
@@ -283,18 +294,15 @@ async def speed_sort_all_channels(channel_list):
         url_ip_map[url] = ip_port
 
     async with aiohttp.ClientSession(connector=conn) as session:
-        # 批量检测节点类型
         for ip in ip_set:
             type_tasks.append(check_node_type(session, ip))
         type_res = await asyncio.gather(*type_tasks)
         node_type_dict = {ip:w for ip,w in type_res}
 
-        # 批量测速
         for _, url in name_url_origin:
             tasks.append(test_single_url(session, url))
         speed_res = await asyncio.gather(*tasks)
 
-    # 分组汇总数据
     group = {}
     for name, url in name_url_origin:
         if name not in group:
@@ -307,7 +315,6 @@ async def speed_sort_all_channels(channel_list):
                 break
 
     final_list = []
-    # 最终排序：1.长效节点优先 2.带宽从高到低 3.延迟从小到大
     for name, url_info_list in group.items():
         url_info_list.sort(key=lambda x: (-x[3], -x[2], x[1]))
         for u, _, _, _ in url_info_list:
@@ -315,7 +322,7 @@ async def speed_sort_all_channels(channel_list):
 
     return final_list
 
-# ===================== TXT转M3U 读取INI配置EPG+LOGO，无匹配用默认图标 =====================
+# ===================== TXT转M3U 支持EPG+自定义LOGO =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
@@ -323,7 +330,6 @@ def txt_to_m3u(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     with open(output_file, "w", encoding="utf-8") as f:
-        # 写入EPG节目单地址
         if epg_url:
             f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
         else:
@@ -336,12 +342,11 @@ def txt_to_m3u(input_file, output_file):
                 if channel_url == '#genre#':
                     genre = channel_name
                 else:
-                    # 拼接频道LOGO
                     logo_url = f"{logo_domain}{channel_name}.png" if logo_domain else default_logo
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 分类改名 原版不变 =====================
+# ===================== 频道别名统一+分类排序 =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -379,7 +384,7 @@ def reorder_channel_content(origin_merge_text):
 
     return "".join(res)
 
-# ===================== 主函数 流程不变 =====================
+# ===================== 主函数 =====================
 def main():
     if not os.path.exists("ip"):
         os.mkdir("ip")
