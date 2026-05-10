@@ -5,6 +5,7 @@ import time
 import datetime
 import glob
 import requests
+import configparser
 import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ===================== 全局配置 还原你原版最快并发 =====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
+CONFIG_INI = "config.ini"
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
 # 新增：带宽测速读取时长 只测大小 不做过滤
@@ -28,6 +30,21 @@ SCAN_WORKER_EVEN = 100
 # 长期稳定、跨零点不掉线 = 1  临时零点失效节点 = 0
 LONG_LIVE_WEIGHT = 1
 TEMP_WEIGHT = 0
+
+# ===================== 读取config.ini配置 =====================
+def load_ini_config():
+    cfg = configparser.ConfigParser()
+    epg_url = ""
+    logo_domain = ""
+    default_logo = ""
+    if os.path.exists(CONFIG_INI):
+        cfg.read(CONFIG_INI, encoding="utf-8")
+        if "EPG" in cfg:
+            epg_url = cfg["EPG"].get("epg_url", "").strip()
+        if "LOGO" in cfg:
+            logo_domain = cfg["LOGO"].get("logo_domain", "").strip()
+            default_logo = cfg["LOGO"].get("default_logo", "").strip()
+    return epg_url, logo_domain, default_logo
 
 # ===================== 别名分类加载 完全原版不动 =====================
 def load_alias_map():
@@ -298,14 +315,19 @@ async def speed_sort_all_channels(channel_list):
 
     return final_list
 
-# ===================== TXT转M3U 标准头部 播放器完美识别 =====================
+# ===================== TXT转M3U 读取INI配置EPG+LOGO，无匹配用默认图标 =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
+    epg_url, logo_domain, default_logo = load_ini_config()
     with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     with open(output_file, "w", encoding="utf-8") as f:
-        f.write("#EXTM3U\n")
+        # 写入EPG节目单地址
+        if epg_url:
+            f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
+        else:
+            f.write("#EXTM3U\n")
         genre = ''
         for line in lines:
             line = line.strip()
@@ -314,7 +336,9 @@ def txt_to_m3u(input_file, output_file):
                 if channel_url == '#genre#':
                     genre = channel_name
                 else:
-                    f.write(f'#EXTINF:-1 group-title="{genre}",{channel_name}\n')
+                    # 拼接频道LOGO
+                    logo_url = f"{logo_domain}{channel_name}.png" if logo_domain else default_logo
+                    f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
 # ===================== 分类改名 原版不变 =====================
