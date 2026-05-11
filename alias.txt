@@ -182,12 +182,12 @@ CDTV8购物,CDTV8购物
 
 电影频道
 BesTV华语,BesTV华语电影
-CHC-动作,CHC-动作电影
-CHC-家庭,CHC-家庭影院
-CHC-影迷,CHC-影迷电影
-CHC-动作,CHC动作电影
-CHC-家庭,CHC家庭影院
-CHC-影迷,CHC影迷电影
+CHC-动作电影,CHC-动作,CHC-动作电影
+CHC-家庭影院,CHC-家庭,CHC-家庭影院
+CHC-影迷电影,CHC-影迷,CHC-影迷电影
+CHC-影迷电影,CHC-动作,CHC动作电影
+CHC-家庭影院,CHC-家庭,CHC家庭影院
+CHC-影迷电影,CHC-影迷,CHC影迷电影
 CHC-高清,CHC高清电影
 华数电影,IPTV6华数电影
 IPTV电影,IPTV6电影
