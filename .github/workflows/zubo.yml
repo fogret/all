@@ -35,15 +35,18 @@ jobs:
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
 
-      - name: 同步远程最新代码（解决版本冲突）
+      # 先同步远程，避免推送冲突
+      - name: 同步远程最新代码
         run: |
-          git pull origin main --rebase --allow-unrelated-histories
+          git pull origin main --rebase
 
+      # 再运行脚本生成新IP文件
       - name: 运行扫描测速脚本
         run: |
           cd $GITHUB_WORKSPACE
           python ./zubo.py
 
+      # 最后提交推送
       - name: 提交并推送文件到仓库
         run: |
           git add .
