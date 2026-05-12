@@ -1,7 +1,8 @@
 name: 全国运营商IP网段采集
 on:
   schedule:
-    - cron: '0 18 * * *'
+    # 北京时间 每日18:00 自动执行
+    - cron: '0 10 * * *'
   workflow_dispatch:
 
 jobs:
@@ -26,10 +27,15 @@ jobs:
       - name: 运行网段采集生成配置
         run: python ispip.py
 
-      - name: 提交所有生成文件
+      - name: 提交推送文件
         run: |
           git config --local user.name "GitHub Action"
-          git config --local user.email "action@github.com@example.com"
+          git config --local user.email "action@github.com"
           git add ispip/ ip/
-          git diff --quiet && git diff --staged --quiet || git commit -m "自动生成各省运营商扫描配置"
-          git push
+          # 无文件改动直接退出，不报错
+          if git diff --cached --quiet; then
+            echo "无新增网段，无需提交"
+          else
+            git commit -m "自动生成各省运营商扫描配置"
+            git push
+          fi
