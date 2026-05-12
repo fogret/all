@@ -2,6 +2,7 @@
 import os
 import requests
 import math
+import socket
 
 # 文件夹配置
 SAVE_DIR = "./ispip"
@@ -17,8 +18,10 @@ ALL_TXT = os.path.join(SAVE_DIR, "cn_all.txt")
 
 # IPTV常用专属扫描端口
 PORT_LIST = ["4022","8188","8889","8077","7788"]
+# 存活检测超时 轻量快速探测
+CHECK_TIMEOUT = 2.0
 
-# 省份IP前缀库（加固贵州精准网段匹配）
+# 省份IP前缀库（完整保留你原版+贵州全部网段）
 prov_prefix = {
     "北京": ["219.142","123.127"],
     "天津": ["60.28","221.238"],
@@ -49,21 +52,19 @@ prov_prefix = {
     "甘肃": ["118.120","220.160"]
 }
 
-# 只保留三大运营商IPTV有效段，过滤无用非IPTV网段
-def is_valid_iptv_ip(ip):
-    # 电信IPTV段
-    telecom_seg = ["27.","36.","39.","58.","59.","60.","61.","113.","114.","118.","119.","106.","218.","222."]
-    # 联通IPTV段
-    unicom_seg = ["112.","124.","219.","220.","221."]
-    # 移动IPTV段
-    mobile_seg = ["110.","111.","182.","183.","223."]
-    all_valid = telecom_seg + unicom_seg + mobile_seg
-    return any(ip.startswith(seg) for seg in all_valid)
+# 宽松网段过滤：只区分三大运营商，不过度剔除网段
+def is_cn_isp_ip(ip):
+    # 电信、联通、移动全部保留，不做严格IPTV段限制
+    telecom = ["27.","36.","39.","58.","59.","60.","61.","106.","113.","114.","118.","119.","218.","219.","222."]
+    unicom = ["112.","116.","124.","219.","220.","221.","222."]
+    mobile = ["110.","111.","182.","183.","223."]
+    all_seg = telecom + unicom + mobile
+    return any(ip.startswith(s) for s in all_seg)
 
 # 判断运营商
 def get_isp(ip):
-    t = ["27.","36.","39.","58.","59.","60.","61.","113.","114.","118.","119.","106.","218.","222."]
-    u = ["112.","124.","219.","220.","221."]
+    t = ["27.","36.","39.","58.","59.","60.","61.","106.","113.","114.","118.","119.","218.","219.","222."]
+    u = ["112.","116.","124.","219.","220.","221.","222."]
     m = ["110.","111.","182.","183.","223."]
     if any(ip.startswith(x) for x in t):
         return "telecom"
@@ -81,7 +82,18 @@ def get_prov(ip):
                 return prov
     return ""
 
-# 加载已有旧内容，用于去重比对
+# 新增：轻量测试端口是否存活，是IPTV转播就保留
+def check_iptv_alive(ip, port):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(CHECK_TIMEOUT)
+        sock.connect((ip, int(port)))
+        sock.close()
+        return True
+    except:
+        return False
+
+# 加载旧文件去重
 def load_exist_lines(file_path):
     exist = set()
     if os.path.exists(file_path):
@@ -92,18 +104,17 @@ def load_exist_lines(file_path):
                     exist.add(line)
     return exist
 
-# 加载所有历史网段
 exist_all = load_exist_lines(ALL_TXT)
 exist_tel = load_exist_lines(TEL_TXT)
 exist_uni = load_exist_lines(UNI_TXT)
 exist_cmcc = load_exist_lines(CMCC_TXT)
 
-# 下载APNIC IP库
+# 下载APNIC国内IP段
 url = "https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 req = requests.get(url, timeout=25)
 raw_data = req.text
 
-# 只提取、过滤国内有效IPTV网段，无效直接丢弃
+# 筛选国内运营商网段
 ip_list = []
 for line in raw_data.splitlines():
     arr = line.split("|")
@@ -111,25 +122,25 @@ for line in raw_data.splitlines():
         continue
     if arr[0] == "apnic" and arr[1] == "CN" and arr[2] == "ipv4":
         ip = arr[3]
-        # 过滤非IPTV无效网段
-        if not is_valid_iptv_ip(ip):
+        # 只过滤非三大运营商，其余全部保留
+        if not is_cn_isp_ip(ip):
             continue
         num = int(arr[4])
         cidr = 32 - int(math.log2(num))
         ip_list.append(f"{ip}/{cidr}")
 
-# 追加写入总网段（自动去重）
+# 总网段去重追加
 with open(ALL_TXT, "a", encoding="utf-8") as f:
     for item in ip_list:
         if item not in exist_all:
             f.write(item + "\n")
 
-# 追加打开运营商文件
+# 运营商文件
 ft = open(TEL_TXT, "a", encoding="utf-8")
 fu = open(UNI_TXT, "a", encoding="utf-8")
 fm = open(CMCC_TXT, "a", encoding="utf-8")
 
-# 初始化省份配置文件 + 加载各省历史行去重
+# 初始化各省配置
 prov_files = {}
 prov_exist = {}
 for p in prov_prefix:
@@ -143,7 +154,7 @@ for p in prov_prefix:
     prov_exist[f"{p}_lt"] = load_exist_lines(lt_path)
     prov_exist[f"{p}_yd"] = load_exist_lines(yd_path)
 
-# 遍历去重写入，非IPTV直接跳过、重复全部跳过
+# 遍历网段 + 预测试存活，可用再写入
 for cidr_ip in ip_list:
     ip_addr = cidr_ip.split("/")[0]
     prov_name = get_prov(ip_addr)
@@ -152,32 +163,38 @@ for cidr_ip in ip_list:
     if not isp_type:
         continue
 
-    # 运营商分类去重写入
-    if isp_type == "telecom":
-        if cidr_ip not in exist_tel:
-            ft.write(cidr_ip + "\n")
-    elif isp_type == "unicom":
-        if cidr_ip not in exist_uni:
-            fu.write(cidr_ip + "\n")
-    elif isp_type == "mobile":
-        if cidr_ip not in exist_cmcc:
-            fm.write(cidr_ip + "\n")
+    # 运营商网段去重写入
+    if isp_type == "telecom" and cidr_ip not in exist_tel:
+        ft.write(cidr_ip + "\n")
+    elif isp_type == "unicom" and cidr_ip not in exist_uni:
+        fu.write(cidr_ip + "\n")
+    elif isp_type == "mobile" and cidr_ip not in exist_cmcc:
+        fm.write(cidr_ip + "\n")
 
     if not prov_name:
         continue
 
     seg3 = ".".join(ip_addr.split(".")[:3]) + ".1"
+    # 逐个端口测试，存活才写入配置文件
     for port in PORT_LIST:
         line = f"{seg3}:{port},11"
-        if isp_type == "telecom":
-            if line not in prov_exist[f"{prov_name}_dx"]:
+        # 重复直接跳过
+        if isp_type == "telecom" and line in prov_exist[f"{prov_name}_dx"]:
+            continue
+        if isp_type == "unicom" and line in prov_exist[f"{prov_name}_lt"]:
+            continue
+        if isp_type == "mobile" and line in prov_exist[f"{prov_name}_yd"]:
+            continue
+        
+        # 存活检测：是IPTV转播可用就保留写入
+        if check_iptv_alive(seg3, port):
+            if isp_type == "telecom":
                 prov_files[f"{prov_name}_dx"].write(line + "\n")
-        elif isp_type == "unicom":
-            if line not in prov_exist[f"{prov_name}_lt"]:
+            elif isp_type == "unicom":
                 prov_files[f"{prov_name}_lt"].write(line + "\n")
-        elif isp_type == "mobile":
-            if line not in prov_exist[f"{prov_name}_yd"]:
+            elif isp_type == "mobile":
                 prov_files[f"{prov_name}_yd"].write(line + "\n")
+            print(f"✅ 存活可用: {prov_name} {seg3}:{port}")
 
 # 关闭全部文件
 ft.close()
@@ -186,7 +203,9 @@ fm.close()
 for f in prov_files.values():
     f.close()
 
-print("✅ 快速扫描完成，自动过滤非IPTV无效网段")
-print("✅ 仅保留三大运营商IPTV可用段")
-print("✅ 全程不删除、不覆盖任何旧数据")
-print("✅ 重复网段自动跳过，只写入全新有效IP")
+print("="*50)
+print("✅ 宽松网段筛选，不盲目删除网段")
+print("✅ 新增IPTV端口存活预测试，只保留转播可用地址")
+print("✅ 无效、不通的IP自动过滤丢弃")
+print("✅ 所有可用IPTV转播网段全部保留")
+print("✅ 分省分运营商去重写入完成，可直接拿去扫描")
