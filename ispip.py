@@ -49,10 +49,6 @@ prov_prefix = {
     "甘肃": ["118.120","220.160"]
 }
 
-# 清空旧文件
-for f in [TEL_TXT, UNI_TXT, CMCC_TXT, ALL_TXT]:
-    open(f, "w", encoding="utf-8").close()
-
 # 下载APNIC IP库
 url = "https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 req = requests.get(url, timeout=25)
@@ -70,8 +66,8 @@ for line in raw_data.splitlines():
         cidr = 32 - int(math.log2(num))
         ip_list.append(f"{ip}/{cidr}")
 
-# 写入全国总网段
-with open(ALL_TXT, "w", encoding="utf-8") as f:
+# 追加写入全国总网段（不覆盖旧数据）
+with open(ALL_TXT, "a", encoding="utf-8") as f:
     for item in ip_list:
         f.write(item + "\n")
 
@@ -96,25 +92,25 @@ def get_prov(ip):
                 return prov
     return ""
 
-# 打开运营商总文件
-ft = open(TEL_TXT, "w", encoding="utf-8")
-fu = open(UNI_TXT, "w", encoding="utf-8")
-fm = open(CMCC_TXT, "w", encoding="utf-8")
+# 追加打开运营商文件
+ft = open(TEL_TXT, "a", encoding="utf-8")
+fu = open(UNI_TXT, "a", encoding="utf-8")
+fm = open(CMCC_TXT, "a", encoding="utf-8")
 
-# 初始化各省配置文件
+# 初始化各省配置文件 追加模式
 prov_files = {}
 for p in prov_prefix:
-    prov_files[f"{p}_dx"] = open(f"{CONFIG_DIR}/{p}_电信_config.txt", "w", encoding="utf-8")
-    prov_files[f"{p}_lt"] = open(f"{CONFIG_DIR}/{p}_联通_config.txt", "w", encoding="utf-8")
-    prov_files[f"{p}_yd"] = open(f"{CONFIG_DIR}/{p}_移动_config.txt", "w", encoding="utf-8")
+    prov_files[f"{p}_dx"] = open(f"{CONFIG_DIR}/{p}_电信_config.txt", "a", encoding="utf-8")
+    prov_files[f"{p}_lt"] = open(f"{CONFIG_DIR}/{p}_联通_config.txt", "a", encoding="utf-8")
+    prov_files[f"{p}_yd"] = open(f"{CONFIG_DIR}/{p}_移动_config.txt", "a", encoding="utf-8")
 
-# 遍历生成标准config格式
+# 遍历追加写入config，保留旧数据
 for cidr_ip in ip_list:
     ip_addr = cidr_ip.split("/")[0]
     prov_name = get_prov(ip_addr)
     isp_type = get_isp(ip_addr)
 
-    # 写入运营商总表
+    # 追加运营商网段
     if isp_type == "telecom":
         ft.write(cidr_ip + "\n")
     elif isp_type == "unicom":
@@ -126,9 +122,8 @@ for cidr_ip in ip_list:
     if not prov_name:
         continue
 
-    # 截取前3段IP，生成和你一模一样的网段格式
+    # 截取前3段IP，生成标准扫描格式
     seg3 = ".".join(ip_addr.split(".")[:3]) + ".1"
-    # 多端口批量写入，格式完全适配你的扫描程序
     for port in PORT_LIST:
         line = f"{seg3}:{port},11"
         if isp_type == "telecom":
@@ -146,5 +141,5 @@ for f in prov_files.values():
     f.close()
 
 print("✅ 执行完成")
-print("✅ ip文件夹已生成 各省_电信/联通/移动_config.txt")
-print("✅ 格式完全兼容你的扫描代码，直接可用")
+print("✅ 所有文件已【追加新增】，旧数据全部保留不删除")
+print("✅ 新网段自动追加到原有config文件末尾")
