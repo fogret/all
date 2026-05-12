@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: 拉取仓库文件
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 配置Python环境
         uses: actions/setup-python@v4
@@ -21,13 +23,13 @@ jobs:
       - name: 安装依赖
         run: pip install requests
 
-      - name: 运行网段采集
+      - name: 运行网段采集脚本
         run: python ispip.py
 
-      - name: 提交保存网段文件
+      - name: 提交并推送文件
         run: |
           git config --local user.name "GitHub Action"
-          git config --local user.email "action@github.com"
+          git config --local user.email "action@github.com@example.com"
           git add ispip/
-          git commit -m "自动更新全国电信/联通/移动IP网段"
+          git diff --quiet && git diff --staged --quiet || git commit -m "自动更新运营商IP网段"
           git push
