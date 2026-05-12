@@ -1,4 +1,4 @@
-name: ISP-IP网段自动采集
+name: 全国运营商IP网段采集
 on:
   schedule:
     - cron: '0 18 * * *'
@@ -13,20 +13,21 @@ jobs:
       - name: 拉取仓库文件
         uses: actions/checkout@v4
 
+      - name: 配置Python环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
       - name: 安装依赖
-        run: |
-          sudo apt update
-          sudo apt install -y wget whois bc
+        run: pip install requests
 
-      - name: 授予脚本执行权限并运行
-        run: |
-          chmod +x ispip.sh
-          ./ispip.sh
+      - name: 运行网段采集
+        run: python ispip.py
 
-      - name: 提交更新网段文件
+      - name: 提交保存网段文件
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
           git add ispip/
-          git commit -m "自动更新运营商IP网段"
+          git commit -m "自动更新全国电信/联通/移动IP网段"
           git push
