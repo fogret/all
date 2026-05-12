@@ -1,6 +1,6 @@
 name: 同步远程IP仓库全部文件
 on:
-  #schedule:
+  schedule:
     - cron: '0 10 * * *'  # 北京时间每日18点自动同步
   workflow_dispatch:      # 支持仓库页面手动一键触发
 
