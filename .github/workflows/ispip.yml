@@ -23,13 +23,13 @@ jobs:
       - name: 安装依赖
         run: pip install requests
 
-      - name: 运行网段采集脚本
+      - name: 运行网段采集生成配置
         run: python ispip.py
 
-      - name: 提交并推送文件
+      - name: 提交所有生成文件
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com@example.com"
-          git add ispip/
-          git diff --quiet && git diff --staged --quiet || git commit -m "自动更新运营商IP网段"
+          git add ispip/ ip/
+          git diff --quiet && git diff --staged --quiet || git commit -m "自动生成各省运营商扫描配置"
           git push
