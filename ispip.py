@@ -49,15 +49,22 @@ prov_prefix = {
     "甘肃": ["118.120","220.160"]
 }
 
-# 【自动删除带下划线的错误文件】
-for fname in os.listdir(CONFIG_DIR):
-    # 匹配 _电信 / _联通 / _移动 这类错误带下划线的文件并删除
-    if "_电信" in fname or "_联通" in fname or "_移动" in fname:
-        os.remove(os.path.join(CONFIG_DIR, fname))
+# 加载已有旧内容，用于去重比对
+def load_exist_lines(file_path):
+    exist = set()
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    exist.add(line)
+    return exist
 
-# 清空ispip缓存文件
-for f in [TEL_TXT, UNI_TXT, CMCC_TXT, ALL_TXT]:
-    open(f, "w", encoding="utf-8").close()
+# 加载所有历史网段
+exist_all = load_exist_lines(ALL_TXT)
+exist_tel = load_exist_lines(TEL_TXT)
+exist_uni = load_exist_lines(UNI_TXT)
+exist_cmcc = load_exist_lines(CMCC_TXT)
 
 # 下载APNIC IP库
 url = "https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
@@ -75,11 +82,6 @@ for line in raw_data.splitlines():
         num = int(arr[4])
         cidr = 32 - int(math.log2(num))
         ip_list.append(f"{ip}/{cidr}")
-
-# 写入全国总网段
-with open(ALL_TXT, "w", encoding="utf-8") as f:
-    for item in ip_list:
-        f.write(item + "\n")
 
 # 判断运营商
 def get_isp(ip):
@@ -102,30 +104,47 @@ def get_prov(ip):
                 return prov
     return ""
 
-# 打开运营商文件
-ft = open(TEL_TXT, "w", encoding="utf-8")
-fu = open(UNI_TXT, "w", encoding="utf-8")
-fm = open(CMCC_TXT, "w", encoding="utf-8")
+# 追加写入总网段（自动去重）
+with open(ALL_TXT, "a", encoding="utf-8") as f:
+    for item in ip_list:
+        if item not in exist_all:
+            f.write(item + "\n")
 
-# 生成【标准无下划线】文件名
+# 追加打开运营商文件
+ft = open(TEL_TXT, "a", encoding="utf-8")
+fu = open(UNI_TXT, "a", encoding="utf-8")
+fm = open(CMCC_TXT, "a", encoding="utf-8")
+
+# 初始化省份配置文件 + 加载各省历史行去重
 prov_files = {}
+prov_exist = {}
 for p in prov_prefix:
-    prov_files[f"{p}_dx"] = open(f"{CONFIG_DIR}/{p}电信_config.txt", "w", encoding="utf-8")
-    prov_files[f"{p}_lt"] = open(f"{CONFIG_DIR}/{p}联通_config.txt", "w", encoding="utf-8")
-    prov_files[f"{p}_yd"] = open(f"{CONFIG_DIR}/{p}移动_config.txt", "w", encoding="utf-8")
+    dx_path = f"{CONFIG_DIR}/{p}电信_config.txt"
+    lt_path = f"{CONFIG_DIR}/{p}联通_config.txt"
+    yd_path = f"{CONFIG_DIR}/{p}移动_config.txt"
+    prov_files[f"{p}_dx"] = open(dx_path, "a", encoding="utf-8")
+    prov_files[f"{p}_lt"] = open(lt_path, "a", encoding="utf-8")
+    prov_files[f"{p}_yd"] = open(yd_path, "a", encoding="utf-8")
+    prov_exist[f"{p}_dx"] = load_exist_lines(dx_path)
+    prov_exist[f"{p}_lt"] = load_exist_lines(lt_path)
+    prov_exist[f"{p}_yd"] = load_exist_lines(yd_path)
 
-# 写入全新纯净网段
+# 遍历去重写入，重复全部跳过
 for cidr_ip in ip_list:
     ip_addr = cidr_ip.split("/")[0]
     prov_name = get_prov(ip_addr)
     isp_type = get_isp(ip_addr)
 
+    # 运营商分类去重写入
     if isp_type == "telecom":
-        ft.write(cidr_ip + "\n")
+        if cidr_ip not in exist_tel:
+            ft.write(cidr_ip + "\n")
     elif isp_type == "unicom":
-        fu.write(cidr_ip + "\n")
+        if cidr_ip not in exist_uni:
+            fu.write(cidr_ip + "\n")
     else:
-        fm.write(cidr_ip + "\n")
+        if cidr_ip not in exist_cmcc:
+            fm.write(cidr_ip + "\n")
 
     if not prov_name:
         continue
@@ -134,11 +153,14 @@ for cidr_ip in ip_list:
     for port in PORT_LIST:
         line = f"{seg3}:{port},11"
         if isp_type == "telecom":
-            prov_files[f"{prov_name}_dx"].write(line + "\n")
+            if line not in prov_exist[f"{prov_name}_dx"]:
+                prov_files[f"{prov_name}_dx"].write(line + "\n")
         elif isp_type == "unicom":
-            prov_files[f"{prov_name}_lt"].write(line + "\n")
+            if line not in prov_exist[f"{prov_name}_lt"]:
+                prov_files[f"{prov_name}_lt"].write(line + "\n")
         else:
-            prov_files[f"{prov_name}_yd"].write(line + "\n")
+            if line not in prov_exist[f"{prov_name}_yd"]:
+                prov_files[f"{prov_name}_yd"].write(line + "\n")
 
 # 关闭全部文件
 ft.close()
@@ -147,6 +169,7 @@ fm.close()
 for f in prov_files.values():
     f.close()
 
-print("✅ 已自动删除所有带下划线的错误文件")
-print("✅ 只保留标准：省份电信_config.txt 格式")
-print("✅ 重新生成全新纯净扫描配置")
+print("✅ 无任何文件删除、清空操作")
+print("✅ 每次写入自动全局去重，重复IP自动跳过")
+print("✅ 旧数据全部永久保留，仅新增不重复网段")
+print("✅ 文件名保持标准无下划线格式")
