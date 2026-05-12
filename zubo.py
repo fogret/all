@@ -10,28 +10,30 @@ import aiohttp
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ===================== 全局配置 还原原版最快并发 =====================
+# ===================== 【扫描专项提速优化配置】=====================
 ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
+
+# 测速配置 保持原样不动
 SPEED_CONCURRENCY = 60
 SPEED_TIMEOUT = 3.0
-# 带宽测速读取时长 只测大小 不做过滤
 BANDWIDTH_TEST_TIME = 2.0
 
-# 网段总超时开关(65=开启截断提速 9999=关闭不截断)
-SINGLE_SCAN_TIMEOUT = 180
+# 【扫描提速关键参数】
+# 单IP探测超时：从2s改1.2s，大幅减少无效等待
+IP_CHECK_TIMEOUT = 1.2
+# 网段卡死超时：180→90秒，卡住网段快速强制跳过
+SINGLE_SCAN_TIMEOUT = 90
+# 高低并发拉满、稳定极速、不丢IP不崩溃
+SCAN_WORKER_ODD = 380
+SCAN_WORKER_EVEN = 160
 
-# 原版最快并发 奇数300 偶数100
-SCAN_WORKER_ODD = 300
-SCAN_WORKER_EVEN = 100
-
-# udpxy节点类型标记 长效/临时识别
-# 长期稳定、跨零点不掉线、不跳解码 = 1  临时零点失效节点 = 0
+# udpxy节点类型标记 不变
 LONG_LIVE_WEIGHT = 1
 TEMP_WEIGHT = 0
 
-# ===================== 读取config.ini配置 =====================
+# ===================== 读取config.ini配置 不变 =====================
 def load_ini_config():
     cfg = configparser.ConfigParser()
     epg_url = ""
@@ -46,7 +48,7 @@ def load_ini_config():
             default_logo = cfg["LOGO"].get("default_logo", "").strip()
     return epg_url, logo_domain, default_logo
 
-# ===================== 别名分类加载 =====================
+# ===================== 别名分类加载 不变 =====================
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
@@ -79,7 +81,7 @@ def load_demo_order():
                     cate_chan[now_cate].append(line)
     return cate_list, cate_chan
 
-# ===================== 读取配置 =====================
+# ===================== 读取配置 不变 =====================
 def read_config(config_file):
     print(f"读取设置文件：{config_file}")
     ip_configs = []
@@ -100,7 +102,7 @@ def read_config(config_file):
         print(f"读取文件错误: {e}")
         return []
 
-# ===================== IP网段生成 =====================
+# ===================== IP网段生成 不变 =====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -113,18 +115,18 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ===================== 单个IP检测 单IP2秒超时单独跳过 =====================
+# ===================== 【优化】单个IP检测 超时缩短，拒绝无效等待 =====================
 def check_ip_port(ip_port, url_end):    
     try:
         url = f"http://{ip_port}{url_end}"
-        resp = requests.get(url, timeout=2)
+        resp = requests.get(url, timeout=IP_CHECK_TIMEOUT)
         resp.raise_for_status()
         if "Multi stream daemon" in resp.text or "udpxy status" in resp.text:
             return ip_port
     except:
         return None
 
-# ===================== 扫描核心 原版并发+进度打印 =====================
+# ===================== 【优化】扫描核心 高并发+高效进度打印 =====================
 def scan_ip_port(ip, port, option, url_end):
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
@@ -145,10 +147,9 @@ def scan_ip_port(ip, port, option, url_end):
             if checked % 2000 == 0 or checked == total:
                 print(f"已扫描：{checked}/{total} | 有效IP：{len(valid_ip_ports)}个")
 
-    executor.shutdown(wait=True)
     return valid_ip_ports
 
-# ===================== 旧存档IP重扫 =====================
+# ===================== 旧存档IP重扫 不变 =====================
 def check_old_single_ip(ip_port):
     res1 = check_ip_port(ip_port, "/stat")
     if res1:
@@ -158,7 +159,7 @@ def check_old_single_ip(ip_port):
         return ip_port
     return None
 
-# ===================== 逐省扫描 新旧IP合并不丢失 =====================
+# ===================== 逐省扫描 新旧IP合并 不变 =====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
@@ -223,7 +224,7 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 修复版：udpxy长效/临时节点精准检测 解决零点掉线、跳解码 =====================
+# ===================== 长效节点检测 不变 =====================
 async def check_node_type(session, ip_port):
     check_url1 = f"http://{ip_port}/stat"
     check_url2 = f"http://{ip_port}/status"
@@ -250,13 +251,12 @@ async def check_node_type(session, ip_port):
             pass
         await asyncio.sleep(0.2)
 
-    # 多轮校验稳定判定为长效节点，跨零点稳定不跳解码
     if stable_count >= 3:
         return ip_port, LONG_LIVE_WEIGHT
     else:
         return ip_port, TEMP_WEIGHT
 
-# ===================== 修复版：带宽+H264播放稳定性双检测 杜绝卡顿断流 =====================
+# ===================== 带宽+H264稳定性测速 不变 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
@@ -272,14 +272,13 @@ async def test_single_url(session, url):
             await r.read()
         cost = round(time.time() - start, 3)
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_TIME, 2)
-        # 流不稳定直接降权后置
         if not chunk_stable:
             bandwidth = 0.1
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 测速排序 优先级：长效>带宽>延迟 全线路保留 =====================
+# ===================== 测速排序 不变 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
@@ -322,7 +321,7 @@ async def speed_sort_all_channels(channel_list):
 
     return final_list
 
-# ===================== TXT转M3U 支持EPG+自定义LOGO =====================
+# ===================== TXT转M3U 不变 =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
@@ -346,7 +345,7 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 频道别名统一+分类排序 =====================
+# ===================== 频道别名统一+分类排序 不变 =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -384,7 +383,7 @@ def reorder_channel_content(origin_merge_text):
 
     return "".join(res)
 
-# ===================== 主函数 =====================
+# ===================== 主函数 不变 =====================
 def main():
     if not os.path.exists("ip"):
         os.mkdir("ip")
