@@ -1,86 +1,48 @@
-# -- coding: utf-8 --
-import os
-import time
-import requests
-from concurrent.futures import ThreadPoolExecutor
+#!/bin/bash
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
+export PATH
 
-# 低配稳跑 不卡死
-THREAD_NUM = 30
-TIMEOUT = 1.5
-SAVEFOLDER = "ipscan"
-SCAN_PORTS = ["4000","4022","8188","8800"]
+# 保存目录
+save_dir="$HOME/ispip"
+mkdir -p $save_dir
 
-# 你原版全部网段 原样不动
-PROVINCEIPSEG = [
-    ("北京", "219.142"),("天津", "60.28"),("河北", "60.6"),
-    ("山西", "59.49"),("内蒙古", "1.24"),("辽宁", "61.133"),
-    ("吉林", "58.154"),("黑龙江", "112.100"),("上海", "116.228"),
-    ("江苏", "58.192"),("浙江", "60.12"),("安徽", "60.166"),
-    ("福建", "218.85"),("江西", "59.52"),("山东", "58.56"),
-    ("河南", "61.158"),("湖北", "58.48"),("湖南", "36.111"),
-    ("广东", "113.96"),("广西", "116.252"),("海南", "218.77"),
-    ("重庆", "61.128"),("四川", "61.139"),("贵州", "61.159"),
-    ("云南", "222.172"),("西藏", "59.151"),("陕西", "113.140"),
-    ("甘肃", "42.90"),("青海", "36.255"),("宁夏", "59.110"),
-    ("新疆", "124.88"),
-]
+# APNIC源文件
+apnic_ip_info="$save_dir/delegated-apnic-latest"
+apnic_all_ip="$save_dir/cn_all_cidr.txt"
 
-# 单IP单独检测
-def check_udpxy(ip, port):
-    try:
-        r = requests.get(f"http://{ip}:{port}/stat", timeout=TIMEOUT)
-        if "udpxy" in r.text:
-            return f"{ip}:{port}"
-    except:
-        pass
-    try:
-        r = requests.get(f"http://{ip}:{port}/status", timeout=TIMEOUT)
-        if "udpxy" in r.text:
-            return f"{ip}:{port}"
-    except:
-        pass
-    return None
+# 运营商输出文件
+tel_file="$save_dir/telecom_cidr.txt"
+uni_file="$save_dir/unicom_cidr.txt"
+cmcc_file="$save_dir/mobile_cidr.txt"
 
-# 单省份 分段生成IP 不一次性加载海量数据
-def scan_prov(prov, ab):
-    print(f"\n======== 开始扫描 {prov} {ab}.x.x ========")
-    alive = []
-    # 分段循环，慢慢生成，不会开局卡死
-    for c in range(0,256):
-        batch_ip = []
-        for d in range(1,255):
-            batch_ip.append(f"{ab}.{c}.{d}")
-        
-        # 每一段小批量扫描
-        with ThreadPoolExecutor(max_workers=THREAD_NUM) as t:
-            for ip in batch_ip:
-                for p in SCAN_PORTS:
-                    res = check_udpxy(ip, p)
-                    if res:
-                        alive.append(res)
-        
-        # 每跑完一段打印进度
-        print(f"{prov} 已扫描到 {c}/255 段 | 当前有效：{len(alive)}")
+# 清空旧文件
+rm -f $apnic_ip_info $apnic_all_ip $tel_file $uni_file $cmcc_file
 
-    alive = list(set(alive))
-    print(f"✅ {prov} 扫描完成，有效IP：{len(alive)}")
-    return alive
+# 下载最新APNIC中国IP段
+wget -q http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest -O $apnic_ip_info
 
-def main():
-    if not os.path.exists(SAVEFOLDER):
-        os.mkdir(SAVEFOLDER)
+# 提取中国IPv4、转换为标准CIDR
+grep "apnic|CN|ipv4|" "$apnic_ip_info" | awk -F'|' '{print $4,$5}' | while read ip num;do
+    cidr=$(echo "l($num)/l(2)" | bc -l | awk '{print 32-int($1)}')
+    echo "${ip}/${cidr}"
+done > $apnic_all_ip
 
-    # 开局立刻打印，马上出日志
-    print("===== 程序正常启动，开始扫描 =====")
+# 按运营商分类
+while read line
+do
+isp_ip=$(echo $line | awk -F'/' '{print $1}')
+isp_info=$(whois -h whois.apnic.net $isp_ip | grep -E "mnt-|netname" | awk '{print $2}' | xargs)
 
-    for prov, ab in PROVINCEIPSEG:
-        data = scan_prov(prov, ab)
-        path = os.path.join(SAVEFOLDER, f"{prov}_config.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            for line in data:
-                f.write(line + ",12\n")
+if echo $isp_info | grep -qiE "CNC|UNICOM";then
+    echo "$line" >> $uni_file
+elif echo $isp_info | grep -qiE "CHINANET|TELECOM|BJTEL";then
+    echo "$line" >> $tel_file
+elif echo $isp_info | grep -qiE "CMCC|CMNET";then
+    echo "$line" >> $cmcc_file
+fi
+done < $apnic_all_ip
 
-    print("\n===== 全部省份扫描完毕 =====")
-
-if __name__ == "__main__":
-    main()
+echo "==================== 网段采集完成 ===================="
+echo "中国电信网段：$tel_file"
+echo "中国联通网段：$uni_file"
+echo "中国移动网段：$cmcc_file"
