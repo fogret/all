@@ -15,7 +15,7 @@ UNI_TXT = os.path.join(SAVE_DIR, "unicom.txt")
 CMCC_TXT = os.path.join(SAVE_DIR, "mobile.txt")
 ALL_TXT = os.path.join(SAVE_DIR, "cn_all.txt")
 
-# 常用扫描端口 跟你原有配置完全一致
+# 常用扫描端口
 PORT_LIST = ["4022","8188","8889","8077","7788"]
 
 # 省份IP前缀库
@@ -49,12 +49,22 @@ prov_prefix = {
     "甘肃": ["118.120","220.160"]
 }
 
+# 【自动删除带下划线的错误文件】
+for fname in os.listdir(CONFIG_DIR):
+    # 匹配 _电信 / _联通 / _移动 这类错误带下划线的文件并删除
+    if "_电信" in fname or "_联通" in fname or "_移动" in fname:
+        os.remove(os.path.join(CONFIG_DIR, fname))
+
+# 清空ispip缓存文件
+for f in [TEL_TXT, UNI_TXT, CMCC_TXT, ALL_TXT]:
+    open(f, "w", encoding="utf-8").close()
+
 # 下载APNIC IP库
 url = "https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 req = requests.get(url, timeout=25)
 raw_data = req.text
 
-# 提取所有中国IPv4网段
+# 提取中国IPv4网段
 ip_list = []
 for line in raw_data.splitlines():
     arr = line.split("|")
@@ -66,8 +76,8 @@ for line in raw_data.splitlines():
         cidr = 32 - int(math.log2(num))
         ip_list.append(f"{ip}/{cidr}")
 
-# 追加写入全国总网段（不覆盖旧数据）
-with open(ALL_TXT, "a", encoding="utf-8") as f:
+# 写入全国总网段
+with open(ALL_TXT, "w", encoding="utf-8") as f:
     for item in ip_list:
         f.write(item + "\n")
 
@@ -92,25 +102,24 @@ def get_prov(ip):
                 return prov
     return ""
 
-# 追加打开运营商文件
-ft = open(TEL_TXT, "a", encoding="utf-8")
-fu = open(UNI_TXT, "a", encoding="utf-8")
-fm = open(CMCC_TXT, "a", encoding="utf-8")
+# 打开运营商文件
+ft = open(TEL_TXT, "w", encoding="utf-8")
+fu = open(UNI_TXT, "w", encoding="utf-8")
+fm = open(CMCC_TXT, "w", encoding="utf-8")
 
-# 初始化各省配置文件 追加模式
+# 生成【标准无下划线】文件名
 prov_files = {}
 for p in prov_prefix:
-    prov_files[f"{p}_dx"] = open(f"{CONFIG_DIR}/{p}_电信_config.txt", "a", encoding="utf-8")
-    prov_files[f"{p}_lt"] = open(f"{CONFIG_DIR}/{p}_联通_config.txt", "a", encoding="utf-8")
-    prov_files[f"{p}_yd"] = open(f"{CONFIG_DIR}/{p}_移动_config.txt", "a", encoding="utf-8")
+    prov_files[f"{p}_dx"] = open(f"{CONFIG_DIR}/{p}电信_config.txt", "w", encoding="utf-8")
+    prov_files[f"{p}_lt"] = open(f"{CONFIG_DIR}/{p}联通_config.txt", "w", encoding="utf-8")
+    prov_files[f"{p}_yd"] = open(f"{CONFIG_DIR}/{p}移动_config.txt", "w", encoding="utf-8")
 
-# 遍历追加写入config，保留旧数据
+# 写入全新纯净网段
 for cidr_ip in ip_list:
     ip_addr = cidr_ip.split("/")[0]
     prov_name = get_prov(ip_addr)
     isp_type = get_isp(ip_addr)
 
-    # 追加运营商网段
     if isp_type == "telecom":
         ft.write(cidr_ip + "\n")
     elif isp_type == "unicom":
@@ -118,11 +127,9 @@ for cidr_ip in ip_list:
     else:
         fm.write(cidr_ip + "\n")
 
-    # 无匹配省份直接跳过
     if not prov_name:
         continue
 
-    # 截取前3段IP，生成标准扫描格式
     seg3 = ".".join(ip_addr.split(".")[:3]) + ".1"
     for port in PORT_LIST:
         line = f"{seg3}:{port},11"
@@ -140,6 +147,6 @@ fm.close()
 for f in prov_files.values():
     f.close()
 
-print("✅ 执行完成")
-print("✅ 所有文件已【追加新增】，旧数据全部保留不删除")
-print("✅ 新网段自动追加到原有config文件末尾")
+print("✅ 已自动删除所有带下划线的错误文件")
+print("✅ 只保留标准：省份电信_config.txt 格式")
+print("✅ 重新生成全新纯净扫描配置")
