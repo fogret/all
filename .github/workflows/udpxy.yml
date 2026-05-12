@@ -1,33 +1,32 @@
 name: ISP-IP网段自动采集
-
 on:
-  # 北京时间每天凌晨2点自动运行
   schedule:
     - cron: '0 18 * * *'
-  # 支持手动点击触发
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: 拉取仓库代码
+      - name: 拉取仓库文件
         uses: actions/checkout@v4
 
-      - name: 安装依赖环境
+      - name: 安装依赖
         run: |
           sudo apt update
           sudo apt install -y wget whois bc
 
-      - name: 执行IP网段采集脚本
+      - name: 授予脚本执行权限并运行
         run: |
           chmod +x ispip.sh
           ./ispip.sh
 
-      - name: 提交保存网段文件
+      - name: 提交更新网段文件
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
           git add ispip/
-          git commit -m "自动更新全国电信/联通/移动IP网段"
+          git commit -m "自动更新运营商IP网段"
           git push
