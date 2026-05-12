@@ -1,36 +1,33 @@
-name: IPTV组播全网专属扫描
+name: ISP-IP网段自动采集
 
 on:
-  workflow_dispatch:
+  # 北京时间每天凌晨2点自动运行
   schedule:
-    # 每3天自动定时扫描 北京时间
-    #- cron: '0 11 */3 * *'
+    - cron: '0 18 * * *'
+  # 支持手动点击触发
+  workflow_dispatch:
 
 jobs:
-  scan:
+  run:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: 拉取代码
+      - name: 拉取仓库代码
         uses: actions/checkout@v4
 
-      - name: 配置Python3.11
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.11
+      - name: 安装依赖环境
+        run: |
+          sudo apt update
+          sudo apt install -y wget whois bc
 
-      - name: 安装依赖
-        run: pip install requests
+      - name: 执行IP网段采集脚本
+        run: |
+          chmod +x ispip.sh
+          ./ispip.sh
 
-      - name: 开始IPTV组播扫描
-        run: python udpxy.py
-
-      - name: 提交扫描结果
+      - name: 提交保存网段文件
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
-          git add .
-          git commit -m "更新IPTV组播专用扫描有效IP"
+          git add ispip/
+          git commit -m "自动更新全国电信/联通/移动IP网段"
           git push
