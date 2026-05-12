@@ -15,10 +15,10 @@ UNI_TXT = os.path.join(SAVE_DIR, "unicom.txt")
 CMCC_TXT = os.path.join(SAVE_DIR, "mobile.txt")
 ALL_TXT = os.path.join(SAVE_DIR, "cn_all.txt")
 
-# 常用扫描端口
+# IPTV常用专属扫描端口
 PORT_LIST = ["4022","8188","8889","8077","7788"]
 
-# 省份IP前缀库
+# 省份IP前缀库（加固贵州精准网段匹配）
 prov_prefix = {
     "北京": ["219.142","123.127"],
     "天津": ["60.28","221.238"],
@@ -43,11 +43,43 @@ prov_prefix = {
     "海南": ["110.190","113.96"],
     "重庆": ["106.83","113.24"],
     "四川": ["118.112","218.6"],
-    "贵州": ["218.86","121.32"],
+    "贵州": ["218.86","61.159","220.172","116.1","59.38"],
     "云南": ["113.114","221.3"],
     "陕西": ["61.185","113.224"],
     "甘肃": ["118.120","220.160"]
 }
+
+# 只保留三大运营商IPTV有效段，过滤无用非IPTV网段
+def is_valid_iptv_ip(ip):
+    # 电信IPTV段
+    telecom_seg = ["27.","36.","39.","58.","59.","60.","61.","113.","114.","118.","119.","106.","218.","222."]
+    # 联通IPTV段
+    unicom_seg = ["112.","124.","219.","220.","221."]
+    # 移动IPTV段
+    mobile_seg = ["110.","111.","182.","183.","223."]
+    all_valid = telecom_seg + unicom_seg + mobile_seg
+    return any(ip.startswith(seg) for seg in all_valid)
+
+# 判断运营商
+def get_isp(ip):
+    t = ["27.","36.","39.","58.","59.","60.","61.","113.","114.","118.","119.","106.","218.","222."]
+    u = ["112.","124.","219.","220.","221."]
+    m = ["110.","111.","182.","183.","223."]
+    if any(ip.startswith(x) for x in t):
+        return "telecom"
+    elif any(ip.startswith(x) for x in u):
+        return "unicom"
+    elif any(ip.startswith(x) for x in m):
+        return "mobile"
+    return ""
+
+# 匹配省份
+def get_prov(ip):
+    for prov, keys in prov_prefix.items():
+        for k in keys:
+            if ip.startswith(k):
+                return prov
+    return ""
 
 # 加载已有旧内容，用于去重比对
 def load_exist_lines(file_path):
@@ -71,7 +103,7 @@ url = "https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest"
 req = requests.get(url, timeout=25)
 raw_data = req.text
 
-# 提取中国IPv4网段
+# 只提取、过滤国内有效IPTV网段，无效直接丢弃
 ip_list = []
 for line in raw_data.splitlines():
     arr = line.split("|")
@@ -79,30 +111,12 @@ for line in raw_data.splitlines():
         continue
     if arr[0] == "apnic" and arr[1] == "CN" and arr[2] == "ipv4":
         ip = arr[3]
+        # 过滤非IPTV无效网段
+        if not is_valid_iptv_ip(ip):
+            continue
         num = int(arr[4])
         cidr = 32 - int(math.log2(num))
         ip_list.append(f"{ip}/{cidr}")
-
-# 判断运营商
-def get_isp(ip):
-    t = ["27.","36.","39.","58.","59.","60.","61.","113.","114.","118.","119."]
-    u = ["112.","124.","218.","219.","220.","221.","222."]
-    m = ["110.","111.","182.","183.","223."]
-    if any(ip.startswith(x) for x in t):
-        return "telecom"
-    elif any(ip.startswith(x) for x in u):
-        return "unicom"
-    elif any(ip.startswith(x) for x in m):
-        return "mobile"
-    return "telecom"
-
-# 匹配省份
-def get_prov(ip):
-    for prov, keys in prov_prefix.items():
-        for k in keys:
-            if ip.startswith(k):
-                return prov
-    return ""
 
 # 追加写入总网段（自动去重）
 with open(ALL_TXT, "a", encoding="utf-8") as f:
@@ -129,11 +143,14 @@ for p in prov_prefix:
     prov_exist[f"{p}_lt"] = load_exist_lines(lt_path)
     prov_exist[f"{p}_yd"] = load_exist_lines(yd_path)
 
-# 遍历去重写入，重复全部跳过
+# 遍历去重写入，非IPTV直接跳过、重复全部跳过
 for cidr_ip in ip_list:
     ip_addr = cidr_ip.split("/")[0]
     prov_name = get_prov(ip_addr)
     isp_type = get_isp(ip_addr)
+
+    if not isp_type:
+        continue
 
     # 运营商分类去重写入
     if isp_type == "telecom":
@@ -142,7 +159,7 @@ for cidr_ip in ip_list:
     elif isp_type == "unicom":
         if cidr_ip not in exist_uni:
             fu.write(cidr_ip + "\n")
-    else:
+    elif isp_type == "mobile":
         if cidr_ip not in exist_cmcc:
             fm.write(cidr_ip + "\n")
 
@@ -158,7 +175,7 @@ for cidr_ip in ip_list:
         elif isp_type == "unicom":
             if line not in prov_exist[f"{prov_name}_lt"]:
                 prov_files[f"{prov_name}_lt"].write(line + "\n")
-        else:
+        elif isp_type == "mobile":
             if line not in prov_exist[f"{prov_name}_yd"]:
                 prov_files[f"{prov_name}_yd"].write(line + "\n")
 
@@ -169,7 +186,7 @@ fm.close()
 for f in prov_files.values():
     f.close()
 
-print("✅ 无任何文件删除、清空操作")
-print("✅ 每次写入自动全局去重，重复IP自动跳过")
-print("✅ 旧数据全部永久保留，仅新增不重复网段")
-print("✅ 文件名保持标准无下划线格式")
+print("✅ 快速扫描完成，自动过滤非IPTV无效网段")
+print("✅ 仅保留三大运营商IPTV可用段")
+print("✅ 全程不删除、不覆盖任何旧数据")
+print("✅ 重复网段自动跳过，只写入全新有效IP")
