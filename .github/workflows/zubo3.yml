@@ -27,23 +27,23 @@ jobs:
           pip install --upgrade pip
           pip install requests aiohttp
 
-      # 第一步先同步远程，避免覆盖本地新文件
-      - name: 同步远程最新代码
+      - name: 配置Git账号
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
+
+      - name: 同步远程代码
+        run: |
           git pull origin main --rebase
 
-      # 第二步生成缺失名单
-      - name: 扫描统计缺失模板并生成名单
+      # 单独生成缺失名单，独立执行
+      - name: 扫描生成缺失省份名单
         run: |
           python - << EOF
           # -*- coding: utf-8 -*-
           import os
-
           TEMPLATE_DIR = "./template"
           os.makedirs(TEMPLATE_DIR, exist_ok=True)
-
           provinces = [
               "北京","天津","河北","山西","内蒙古","辽宁","吉林","黑龙江",
               "上海","江苏","浙江","安徽","福建","江西","山东","河南",
@@ -51,37 +51,31 @@ jobs:
               "云南","西藏","陕西","甘肃","青海","宁夏","新疆"
           ]
           isps = ["电信","联通","移动"]
-
           exist_files = set(os.listdir(TEMPLATE_DIR))
           missing_list = []
-
           for p in provinces:
               for isp in isps:
-                  target_name = f"template_{p}{isp}.txt"
-                  if target_name not in exist_files:
-                      missing_list.append(f"{p} {isp} | {target_name}")
-
-          # 根目录生成文件
-          with open("./缺失省份名单.txt", "w", encoding="utf-8") as f:
+                  fn = f"template_{p}{isp}.txt"
+                  if fn not in exist_files:
+                      missing_list.append(f"{p} {isp} | {fn}")
+          with open("./缺失省份名单.txt","w",encoding="utf-8") as f:
               f.write("=== Template缺失模板文件清单 ===\n")
               f.write(f"总计缺失：{len(missing_list)} 个\n\n")
               for item in missing_list:
-                  f.write(item + "\n")
-
+                  f.write(item+"\n")
           print("✅ 扫描完成")
           print(f"📄 总计缺失模板：{len(missing_list)} 个")
-          print("📃 名单已保存至根目录：缺失省份名单.txt")
           EOF
 
-      # 第三步运行扫描脚本
-      - name: 运行扫描主脚本
+      # 【关键】先生成、先提交名单，就算后面脚本报错也能保存文件
+      - name: 提交缺失名单到仓库
         run: |
-          cd $GITHUB_WORKSPACE
-          python ./zubo.py
-
-      # 第四步强制提交+推送所有改动，包含名单文件
-      - name: 提交并推送所有文件
-        run: |
-          git add .
-          git commit -m "自动生成缺失省份名单 + 扫描更新"
+          git add ./缺失省份名单.txt
+          git commit -m "自动生成template缺失49个省份模板名单"
           git push origin main
+
+      # 扫描脚本单独运行，报错不影响已提交的名单
+      - name: 运行zubo扫描脚本
+        continue-on-error: true
+        run: |
+          python ./zubo.py
