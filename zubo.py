@@ -21,9 +21,9 @@ SPEED_TIMEOUT = 3.0
 BANDWIDTH_TEST_TIME = 2.0
 
 # 【扫描提速关键参数】
-# 单IP探测超时：从2s改1.2s，大幅减少无效等待
+# 单IP探测超时：
 IP_CHECK_TIMEOUT = 1.0
-# 网段卡死超时：180→90秒，卡住网段快速强制跳过
+# 网段卡死超时：卡住网段快速强制跳过
 SINGLE_SCAN_TIMEOUT = 180
 # 高低并发拉满、稳定极速、不丢IP不崩溃
 SCAN_WORKER_ODD = 380
