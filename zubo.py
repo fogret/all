@@ -1,4 +1,4 @@
- # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from threading import Thread
 import os
 import time
@@ -30,11 +30,8 @@ TEMP_WEIGHT = 1
 INVALID_WEIGHT = 0
 
 # 【扫描提速关键参数】
-# 单IP探测超时：
 IP_CHECK_TIMEOUT = 1.0
-# 网段卡死超时：卡住网段快速强制跳过
 SINGLE_SCAN_TIMEOUT = 180
-# 高低并发拉满、稳定极速、不丢IP不崩溃
 SCAN_WORKER_ODD = 380
 SCAN_WORKER_EVEN = 160
 
@@ -229,7 +226,7 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 优化精准分级长效节点检测 =====================
+# ===================== 优化精准分级长效节点检测 最差也保留权重不删线 =====================
 async def check_node_type(session, ip_port):
     check_url1 = f"http://{ip_port}/stat"
     check_url2 = f"http://{ip_port}/status"
@@ -271,30 +268,22 @@ async def check_node_type(session, ip_port):
     elif stable_score >= 1:
         return ip_port, TEMP_WEIGHT
     else:
-        return ip_port, INVALID_WEIGHT
+        return ip_port, 1
 
-# ===================== 极速精准带宽测速 劣流提前拦截 =====================
+# ===================== 极小分片稳流测速 根治跳解码 全程100%保留所有线路 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
         total_bytes = 0
-        normal_stream = True
         async with session.get(url, timeout=SPEED_TIMEOUT) as r:
             while time.time() - start < BANDWIDTH_TEST_DURATION:
-                chunk = await r.content.read(1024*256)
+                chunk = await r.content.read(1024 * 32)
                 if not chunk:
-                    normal_stream = False
                     break
                 total_bytes += len(chunk)
-                if time.time() - start > DROP_SLOW_DELAY and total_bytes < MIN_VALID_BYTES:
-                    normal_stream = False
-                    break
             await r.read()
         cost = round(time.time() - start, 3)
-        if not normal_stream or total_bytes < MIN_VALID_BYTES:
-            bandwidth = 0.05
-        else:
-            bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
+        bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
