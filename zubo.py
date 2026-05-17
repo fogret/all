@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 from threading import Thread
 import os
 import time
@@ -15,10 +15,19 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 
-# 测速配置 保持原样不动
-SPEED_CONCURRENCY = 60
-SPEED_TIMEOUT = 3.0
-BANDWIDTH_TEST_TIME = 2.0
+# 测速配置 优化重写
+SPEED_CONCURRENCY = 80
+SPEED_TIMEOUT = 2.2
+BANDWIDTH_TEST_DURATION = 1.2
+MIN_VALID_BYTES = 1024 * 128
+DROP_SLOW_DELAY = 1.5
+
+# udpxy节点精细多档权重
+LIVE_TOP_WEIGHT = 4
+LIVE_GOOD_WEIGHT = 3
+NORMAL_WEIGHT = 2
+TEMP_WEIGHT = 1
+INVALID_WEIGHT = 0
 
 # 【扫描提速关键参数】
 # 单IP探测超时：
@@ -28,10 +37,6 @@ SINGLE_SCAN_TIMEOUT = 180
 # 高低并发拉满、稳定极速、不丢IP不崩溃
 SCAN_WORKER_ODD = 380
 SCAN_WORKER_EVEN = 160
-
-# udpxy节点类型标记 不变
-LONG_LIVE_WEIGHT = 1
-TEMP_WEIGHT = 0
 
 # ===================== 读取config.ini配置 不变 =====================
 def load_ini_config():
@@ -92,7 +97,7 @@ def read_config(config_file):
                     parts = line.strip().split(',')
                     ip_part, port = parts[0].strip().split(':')
                     a, b, c, d = ip_part.split('.')
-                    option = int(parts[1]) 
+                    option = int(parts[1])
                     url_end = "/status" if option >= 10 else "/stat"
                     ip = f"{a}.{b}.{c}.1" if option % 2 == 0 else f"{a}.{b}.1.1"
                     ip_configs.append((ip, port, option, url_end))
@@ -116,7 +121,7 @@ def generate_ip_ports(ip, port, option):
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
 # ===================== 【优化】单个IP检测 超时缩短，拒绝无效等待 =====================
-def check_ip_port(ip_port, url_end):    
+def check_ip_port(ip_port, url_end):
     try:
         url = f"http://{ip_port}{url_end}"
         resp = requests.get(url, timeout=IP_CHECK_TIMEOUT)
@@ -202,7 +207,7 @@ def multicast_province(config_file):
 
     if not os.path.exists("ip"):
         os.mkdir("ip")
-        
+
     # 同步更新存档文件
     full_archive_ips = sorted(list(set(all_final_ips)))
     with open(archive_path, "w", encoding="utf-8") as f:
@@ -224,66 +229,82 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 长效节点检测 不变 =====================
+# ===================== 优化精准分级长效节点检测 =====================
 async def check_node_type(session, ip_port):
     check_url1 = f"http://{ip_port}/stat"
     check_url2 = f"http://{ip_port}/status"
-    stable_count = 0
-    retry_times = 3
+    stable_score = 0
+    retry_times = 2
 
     for _ in range(retry_times):
         try:
-            async with session.get(check_url1, timeout=1.8) as r:
+            async with session.get(check_url1, timeout=1.2) as r:
                 text = await r.text()
-                if len(text) > 800 and "stream" in text.lower() and "client" in text.lower():
-                    stable_count += 1
+                txt_len = len(text)
+                if txt_len > 1200 and "stream" in text and "client" in text:
+                    stable_score += 2
+                elif txt_len > 700:
+                    stable_score += 1
         except:
             pass
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
 
     for _ in range(retry_times):
         try:
-            async with session.get(check_url2, timeout=1.8) as r:
+            async with session.get(check_url2, timeout=1.2) as r:
                 text = await r.text()
-                if len(text) > 800 and "stream" in text.lower() and "client" in text.lower():
-                    stable_count += 1
+                txt_len = len(text)
+                if txt_len > 1200 and "stream" in text and "client" in text:
+                    stable_score += 2
+                elif txt_len > 700:
+                    stable_score += 1
         except:
             pass
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
 
-    if stable_count >= 3:
-        return ip_port, LONG_LIVE_WEIGHT
-    else:
+    if stable_score >= 7:
+        return ip_port, LIVE_TOP_WEIGHT
+    elif stable_score >= 4:
+        return ip_port, LIVE_GOOD_WEIGHT
+    elif stable_score >= 2:
+        return ip_port, NORMAL_WEIGHT
+    elif stable_score >= 1:
         return ip_port, TEMP_WEIGHT
+    else:
+        return ip_port, INVALID_WEIGHT
 
-# ===================== 带宽+H264稳定性测速 不变 =====================
+# ===================== 极速精准带宽测速 劣流提前拦截 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
         total_bytes = 0
-        chunk_stable = True
+        normal_stream = True
         async with session.get(url, timeout=SPEED_TIMEOUT) as r:
-            while time.time() - start < BANDWIDTH_TEST_TIME:
+            while time.time() - start < BANDWIDTH_TEST_DURATION:
                 chunk = await r.content.read(1024*256)
                 if not chunk:
-                    chunk_stable = False
+                    normal_stream = False
                     break
                 total_bytes += len(chunk)
+                if time.time() - start > DROP_SLOW_DELAY and total_bytes < MIN_VALID_BYTES:
+                    normal_stream = False
+                    break
             await r.read()
         cost = round(time.time() - start, 3)
-        bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_TIME, 2)
-        if not chunk_stable:
-            bandwidth = 0.1
+        if not normal_stream or total_bytes < MIN_VALID_BYTES:
+            bandwidth = 0.05
+        else:
+            bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 测速排序 不变 =====================
+# ===================== 综合加权精准最优排序 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
-    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY)
+    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=300)
 
     ip_set = set()
     url_ip_map = {}
@@ -310,14 +331,15 @@ async def speed_sort_all_channels(channel_list):
         for n, u in name_url_origin:
             if u == url:
                 node_w = node_type_dict.get(url_ip_map[url], TEMP_WEIGHT)
-                group[n].append( (u, cost, bw, node_w) )
+                score = node_w * 60 + bw * 35 - cost * 5
+                group[n].append((u, cost, bw, node_w, score))
                 break
 
     final_list = []
     for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: (-x[3], -x[2], x[1]))
-        for u, _, _, _ in url_info_list:
-            final_list.append( (name, u) )
+        url_info_list.sort(key=lambda x: (-x[4], -x[2], x[1]))
+        for u, _, _, _, _ in url_info_list:
+            final_list.append((name, u))
 
     return final_list
 
@@ -361,7 +383,7 @@ def reorder_channel_content(origin_merge_text):
         if "," in line:
             name, url = line.split(",", 1)
             new_name = alias_map.get(name.strip(), name.strip())
-            all_channel_data.append( (new_name, url.strip()) )
+            all_channel_data.append((new_name, url.strip()))
 
     print("\n========== 节点类型识别+异步测速+带宽检测排序，全部线路保留 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
@@ -397,7 +419,7 @@ def main():
             content = f.read()
             if content.strip():
                 file_contents.append(content)
-    
+
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
     current_time = now.strftime("%Y/%m/%d %H:%M")
     origin_total = f"{current_time}更新,#genre#\n"
