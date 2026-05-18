@@ -320,14 +320,14 @@ async def speed_sort_all_channels(channel_list):
 
         group = {}
         for name, url in name_url_origin:
-            if name not in group:
-                group[name] = []
             for url, cost, bw in speed_res:
                 for n, u in name_url_origin:
                     if u == url:
+                        clean_name = n.strip()
                         node_w = node_type_dict.get(url_ip_map[url], TEMP_WEIGHT)
                         score = node_w * 45 + bw * 45 - cost * 10
-                        group[n].append((u, cost, bw, node_w, score))
+                        # 核心修复：无键自动新建空列表，彻底杜绝所有频道KeyError
+                        group.setdefault(clean_name, []).append((u, cost, bw, node_w, score))
                         break
 
         final_list = []
