@@ -15,21 +15,21 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 
-# 测速配置 优化重写
-SPEED_CONCURRENCY = 80
-SPEED_TIMEOUT = 2.2
-BANDWIDTH_TEST_DURATION = 1.2
-MIN_VALID_BYTES = 1024 * 128
-DROP_SLOW_DELAY = 1.5
+# 仅修改测速稳定参数，根治播放断续跳解码
+SPEED_CONCURRENCY = 50
+SPEED_TIMEOUT = 2.8
+BANDWIDTH_TEST_DURATION = 1.8
+MIN_VALID_BYTES = 1024 * 512
+DROP_SLOW_DELAY = 1.8
 
-# udpxy节点精细多档权重
-LIVE_TOP_WEIGHT = 4
-LIVE_GOOD_WEIGHT = 3
+# udpxy节点权重上调，稳定节点优先级拉满
+LIVE_TOP_WEIGHT = 6
+LIVE_GOOD_WEIGHT = 4
 NORMAL_WEIGHT = 2
 TEMP_WEIGHT = 1
 INVALID_WEIGHT = 0
 
-# 【扫描提速关键参数】
+# 【扫描提速关键参数】完全原样未改动
 IP_CHECK_TIMEOUT = 1.0
 SINGLE_SCAN_TIMEOUT = 180
 SCAN_WORKER_ODD = 380
@@ -226,32 +226,36 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 修正：单次快速节点判定 删无效重试 权重正常分级 =====================
+# ===================== 重写节点判定：双接口稳态计分，过滤瞬时假好节点 =====================
 async def check_node_type(session, ip_port):
     stable_score = 0
     try:
-        async with session.get(f"http://{ip_port}/stat", timeout=1.2) as r:
+        async with session.get(f"http://{ip_port}/stat", timeout=1.4) as r:
             text = await r.text()
             txt_len = len(text)
-            if txt_len > 1200 and "stream" in text and "client" in text:
+            if txt_len > 1300 and "stream" in text and "client" in text:
+                stable_score += 3
+            elif txt_len > 800:
                 stable_score += 2
-            elif txt_len > 700:
+            elif txt_len > 400:
                 stable_score += 1
     except:
         pass
 
     try:
-        async with session.get(f"http://{ip_port}/status", timeout=1.2) as r:
+        async with session.get(f"http://{ip_port}/status", timeout=1.4) as r:
             text = await r.text()
             txt_len = len(text)
-            if txt_len > 1200 and "stream" in text and "client" in text:
+            if txt_len > 1300 and "stream" in text and "client" in text:
+                stable_score += 3
+            elif txt_len > 800:
                 stable_score += 2
-            elif txt_len > 700:
+            elif txt_len > 400:
                 stable_score += 1
     except:
         pass
 
-    if stable_score >= 7:
+    if stable_score >= 6:
         return ip_port, LIVE_TOP_WEIGHT
     elif stable_score >= 4:
         return ip_port, LIVE_GOOD_WEIGHT
@@ -262,29 +266,32 @@ async def check_node_type(session, ip_port):
     else:
         return ip_port, INVALID_WEIGHT
 
-# ===================== 修正测速：删除末尾无用全量读流 精简读取 =====================
+# ===================== 重写测速：大分片真实码率、低流量直接判劣源 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
         total_bytes = 0
         async with session.get(url, timeout=SPEED_TIMEOUT) as r:
             while time.time() - start < BANDWIDTH_TEST_DURATION:
-                chunk = await r.content.read(1024 * 32)
+                chunk = await r.content.read(1024 * 64)
                 if not chunk:
                     break
                 total_bytes += len(chunk)
         cost = round(time.time() - start, 3)
+        # 流量不达标判定无效低带宽
+        if total_bytes < MIN_VALID_BYTES:
+            return url, cost, 0.0
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 修正排序：字典直配删双层嵌套低效遍历 计分精简高效 =====================
+# ===================== 重写排序公式：稳定权重最高，排序永久固定，杜绝跳解码断续 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
-    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=300)
+    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=600)
 
     ip_set = set()
     url_ip_map = {}
@@ -310,7 +317,8 @@ async def speed_sort_all_channels(channel_list):
             group[name] = []
         cost, bw = speed_dict.get(url, (999.9, 0.0))
         node_w = node_type_dict.get(url_ip_map.get(url,""), TEMP_WEIGHT)
-        score = node_w * 50 + bw * 30 - cost * 4
+        # 核心稳流计分：稳定 > 带宽 > 延迟
+        score = node_w * 60 + bw * 25 - cost * 8
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
