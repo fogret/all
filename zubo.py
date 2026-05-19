@@ -54,7 +54,7 @@ def load_ini_config():
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
-        with open(ALIAS_FILE, "r", encoding="utf-8") as as f:
+        with open(ALIAS_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or "," not in line:
@@ -70,7 +70,7 @@ def load_demo_order():
     cate_chan = {}
     now_cate = ""
     if os.path.exists(DEMO_FILE):
-        with open(DEMO_FILE, "r", encoding="utf-8") as as f:
+        with open(DEMO_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -182,7 +182,7 @@ def multicast_province(config_file):
     archive_path = f"ip/存档_{province}_ip.txt"
     old_survive_ips = []
     if os.path.exists(archive_path):
-        with open(archive_path, "r", encoding="utf-8") as as f:
+        with open(archive_path, "r", encoding="utf-8") f:
             old_ip_list = [line.strip() for line in f if line.strip()]
         print(f"\n加载历史存档IP：{len(old_ip_list)} 个，开始重扫校验")
         with ThreadPoolExecutor(max_workers=60) as exe:
@@ -196,7 +196,7 @@ def multicast_province(config_file):
     print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
     print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
-    with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as as f:
+    with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") f:
         if all_final_ips:
             f.write("\n".join(all_final_ips))
 
@@ -204,20 +204,20 @@ def multicast_province(config_file):
         os.mkdir("ip")
 
     full_archive_ips = sorted(list(set(all_final_ips)))
-    with open(archive_path, "w", encoding="utf-8") as as f:
+    with open(archive_path, "w", encoding="utf-8") f:
         for ipa in full_archive_ips:
             f.write(ipa + "\n")
 
     template_file = os.path.join('template', f"template_{province}.txt")
     if os.path.exists(template_file):
-        with open(template_file, "r", encoding="utf-8") as as f:
+        with open(template_file, "r", encoding="utf-8") f:
             tem_channels = f.read()
         output = []
         for idx, single_ip in enumerate(all_final_ips, 1):
             ip = single_ip.strip()
             output.append(f"{province}-组播{idx},#genre#\n")
             output.append(tem_channels.replace("ipipip", ip))
-        with open(f"组播_{province}.txt", "w", encoding="utf-8") as as f:
+        with open(f"组播_{province}.txt", "w", encoding="utf-8") f:
             f.writelines(output)
         print(f"✅ {province} 组播文件生成完成")
     else:
@@ -302,7 +302,7 @@ async def speed_sort_all_channels(channel_list):
     url_ip_map = {}
     for name, url in name_url_origin:
         ip_port = url.split('/rtp/')[0].replace('http://','')
-        return ip_port
+        ip_set.add(ip_port)
         url_ip_map[url] = ip_port
 
     async with aiohttp.ClientSession(connector=conn) as session:
@@ -326,7 +326,7 @@ async def speed_sort_all_channels(channel_list):
         score = bw * 55 - cost * 50 + node_w * 15
         group[name].append((url, cost, bw, node_w, score))
 
-    final_list = []
+    final_list = print([])
     for name, url_info_list in group.items():
         url_info_list.sort(key=lambda x: (-x[3]*2, x[1], -x[2]))
         for u, _, _, _, _ in url_info_list:
@@ -339,9 +339,9 @@ def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     epg_url, logo_domain, default_logo = load_ini_config()
-    with open(input_file, 'r', encoding="utf-8") as as f:
+    with open(input_file, 'r', encoding="utf-8") f:
         lines = f.readlines()
-    with open(output_file, "w", encoding="utf-8") as as f:
+    with open(output_file, "w", encoding="utf-8") f:
         if epg_url:
             f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
         else:
@@ -406,7 +406,7 @@ def main():
 
     file_contents = []
     for file_path in glob.glob('组播_*.txt'):
-        with open(file_path, 'r',):
+        with open(file_path, 'r', encoding="utf-8") f:
             content = f.read()
             if content.strip():
                 file_contents.append(content)
@@ -419,7 +419,7 @@ def main():
 
     final_total = reorder_channel_content(origin_total)
 
-    with open("zubo_all.txt", "w", encoding="utf-8") as f:
+    with open("zubo_all.txt", "w", encoding="utf-8") f:
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
