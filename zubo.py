@@ -204,13 +204,13 @@ def multicast_province(config_file):
         os.mkdir("ip")
 
     full_archive_ips = sorted(list(set(all_final_ips)))
-    with open(archive_path, "w", encoding="utf-8") as f:
+    with open(archive_path, "w", encoding="utf-8") f:
         for ipa in full_archive_ips:
             f.write(ipa + "\n")
 
     template_file = os.path.join('template', f"template_{province}.txt")
     if os.path.exists(template_file):
-        with open(template_file, "r", encoding="utf-8") f:
+        with open(template_file, "r", encoding="utf-8") as f:
             tem_channels = f.read()
         output = []
         for idx, single_ip in enumerate(all_final_ips, 1):
@@ -231,7 +231,7 @@ async def check_node_type(session, ip_port):
             text = await r.text()
             txt_len = len(text)
             if txt_len > 1300 and "stream" in text and "client" in text:
-                stable_score += 3
+                |stable_score += 3
             elif txt_len > 800:
                 stable_score += 2
             elif txt_len > 400:
@@ -339,7 +339,7 @@ def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     epg_url, logo_domain, default_logo = load_ini_config()
-    with open(input_file, 'r', encoding="utf-8") as f:
+    with open(input_file, 'r', encoding="utf-8") f:
         lines = f.readlines()
     with open(output_file, "w", encoding="utf-8") f:
         if epg_url:
@@ -406,7 +406,7 @@ def main():
 
     file_contents = []
     for file_path in glob.glob('组播_*.txt'):
-        with open(file_path, 'r', encoding="utf-8") as f:
+        with open(file_path, 'r', encoding="utf-8") f:
             content = f.read()
             if content.strip():
                 file_contents.append(content)
