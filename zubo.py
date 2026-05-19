@@ -286,7 +286,7 @@ async def test_single_url(session, url):
     except:
         return url, 999.9, 0.0
 
-# ===================== 重写排序公式：稳定权重最高，排序永久固定，杜绝跳解码断续 =====================
+# ===================== 新版排序：带宽越快越靠前，延迟次之，全部线路保留不删除 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
@@ -317,13 +317,14 @@ async def speed_sort_all_channels(channel_list):
             group[name] = []
         cost, bw = speed_dict.get(url, (999.9, 0.0))
         node_w = node_type_dict.get(url_ip_map.get(url,""), TEMP_WEIGHT)
-        # 核心稳流计分：稳定 > 带宽 > 延迟
-        score = node_w * 60 + bw * 25 - cost * 8
+        
+        # 权重：带宽 >> 延迟 >> 稳定
+        score = bw * 100 - cost * 15 + node_w * 3
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: (-x[4], -x[2], x[1]))
+        url_info_list.sort(key=lambda x: (-x[2], x[1], -x[3]))
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
@@ -371,9 +372,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append((new_name, url.strip()))
 
-    print("\n========== 节点类型识别+异步测速+带宽检测排序，全部线路保留 ==========")
+    print("\n========== 节点带宽测速排序，全部线路完整保留 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 长效节点优先排序完成，无删除任何线路 ==========\n")
+    print("========== 网速最快线路置顶，依次从快到慢排序完成 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -418,7 +419,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 长效节点优先+带宽+测速排序完毕，所有线路完整保留 =====")
+    print("\n===== 全部执行完成 网速最快优先排序，所有线路完整保留 =====")
 
 if __name__ == "__main__":
     main()
