@@ -76,7 +76,7 @@ def load_demo_order():
                 if not line:
                     continue
                 if line.endswith(",#genre#"):
-                    now_cate = line.replace(",#genre#","")
+                    now_cate = line.replace(",#genre#", "")
                     cate_list.append(now_cate)
                     cate_chan[now_cate] = []
                 elif now_cate:
@@ -196,15 +196,15 @@ def multicast_province(config_file):
     print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
     print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
+    if not os.path.exists("ip"):
+        os.mkdir("ip")
+
     with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as f:
         if all_final_ips:
             f.write("\n".join(all_final_ips))
 
-    if not os.path.exists("ip"):
-        os.mkdir("ip")
-
     full_archive_ips = sorted(list(set(all_final_ips)))
-    with open(archive_path, "w", encoding="utf-8") f:
+    with open(archive_path, "w", encoding="utf-8") as f:
         for ipa in full_archive_ips:
             f.write(ipa + "\n")
 
@@ -217,7 +217,7 @@ def multicast_province(config_file):
             ip = single_ip.strip()
             output.append(f"{province}-组播{idx},#genre#\n")
             output.append(tem_channels.replace("ipipip", ip))
-        with open(f"组播_{province}.txt", "w", encoding="utf-8") f:
+        with open(f"组播_{province}.txt", "w", encoding="utf-8") as f:
             f.writelines(output)
         print(f"✅ {province} 组播文件生成完成")
     else:
@@ -231,7 +231,7 @@ async def check_node_type(session, ip_port):
             text = await r.text()
             txt_len = len(text)
             if txt_len > 1300 and "stream" in text and "client" in text:
-                |stable_score += 3
+                stable_score += 3
             elif txt_len > 800:
                 stable_score += 2
             elif txt_len > 400:
@@ -301,7 +301,7 @@ async def speed_sort_all_channels(channel_list):
     ip_set = set()
     url_ip_map = {}
     for name, url in name_url_origin:
-        ip_port = url.split('/rtp/')[0].replace('http://','')
+        ip_port = url.split('/rtp/')[0].replace('http://', '')
         ip_set.add(ip_port)
         url_ip_map[url] = ip_port
 
@@ -309,26 +309,26 @@ async def speed_sort_all_channels(channel_list):
         for ip in ip_set:
             type_tasks.append(check_node_type(session, ip))
         type_res = await asyncio.gather(*type_tasks)
-        node_type_dict = {ip:w for ip,w in type_res}
+        node_type_dict = {ip: w for ip, w in type_res}
 
         for _, url in name_url_origin:
             tasks.append(test_single_url(session, url))
         speed_res = await asyncio.gather(*tasks)
 
-    speed_dict = {url:(cost,bw) for url,cost,bw in speed_res}
+    speed_dict = {url: (cost, bw) for url, cost, bw in speed_res}
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
         cost, bw = speed_dict.get(url, (999.9, 0.0))
-        node_w = node_type_dict.get(url_ip_map.get(url,""), TEMP_WEIGHT)
-        
+        node_w = node_type_dict.get(url_ip_map.get(url, ""), TEMP_WEIGHT)
+
         score = bw * 55 - cost * 50 + node_w * 15
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: (-x[3]*2, x[1], -x[2]))
+        url_info_list.sort(key=lambda x: (-x[3] * 2, x[1], -x[2]))
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
@@ -339,9 +339,9 @@ def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     epg_url, logo_domain, default_logo = load_ini_config()
-    with open(input_file, 'r', encoding="utf-8") f:
+    with open(input_file, 'r', encoding="utf-8") as f:
         lines = f.readlines()
-    with open(output_file, "w", encoding="utf-8") f:
+    with open(output_file, "w", encoding="utf-8") as f:
         if epg_url:
             f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
         else:
@@ -406,7 +406,7 @@ def main():
 
     file_contents = []
     for file_path in glob.glob('组播_*.txt'):
-        with open(file_path, 'r', encoding="utf-8") f:
+        with open(file_path, 'r', encoding="utf-8") as f:
             content = f.read()
             if content.strip():
                 file_contents.append(content)
@@ -419,11 +419,12 @@ def main():
 
     final_total = reorder_channel_content(origin_total)
 
-    with open("zubo_all.txt", "w", encoding="utf-8") f:
+    with open("zubo_all.txt", "w", encoding="utf-8") as f:
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
     print("\n===== 全部执行完成 长稳优先排序，播放全程流畅无断续 =====")
+
 
 if __name__ == "__main__":
     main()
