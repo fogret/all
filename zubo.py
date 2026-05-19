@@ -54,7 +54,7 @@ def load_ini_config():
 def load_alias_map():
     alias_map = {}
     if os.path.exists(ALIAS_FILE):
-        with open(ALIAS_FILE, "r", encoding="utf-8") f:
+        with open(ALIAS_FILE, "r", encoding="utf-8") as as f:
             for line in f:
                 line = line.strip()
                 if not line or "," not in line:
@@ -70,7 +70,7 @@ def load_demo_order():
     cate_chan = {}
     now_cate = ""
     if os.path.exists(DEMO_FILE):
-        with open(DEMO_FILE, "r", encoding="utf-8") f:
+        with open(DEMO_FILE, "r", encoding="utf-8") as as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -182,7 +182,7 @@ def multicast_province(config_file):
     archive_path = f"ip/存档_{province}_ip.txt"
     old_survive_ips = []
     if os.path.exists(archive_path):
-        with open(archive_path, "r", encoding="utf-8") f:
+        with open(archive_path, "r", encoding="utf-8") as as f:
             old_ip_list = [line.strip() for line in f if line.strip()]
         print(f"\n加载历史存档IP：{len(old_ip_list)} 个，开始重扫校验")
         with ThreadPoolExecutor(max_workers=60) as exe:
@@ -193,10 +193,10 @@ def multicast_province(config_file):
 
     print(f"\n{province} 汇总结果：")
     print(f"新扫描有效IP：{len(new_valid_ips)} 个")
-    print(f")旧存档重扫存活：{len(old_survive_ips)} 个")
+    print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
     print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
-    with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") f:
+    with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as as f:
         if all_final_ips:
             f.write("\n".join(all_final_ips))
 
@@ -204,20 +204,20 @@ def multicast_province(config_file):
         os.mkdir("ip")
 
     full_archive_ips = sorted(list(set(all_final_ips)))
-    with open(archive_path, "w", encoding="utf-8") f:
+    with open(archive_path, "w", encoding="utf-8") as as f:
         for ipa in full_archive_ips:
             f.write(ipa + "\n")
 
     template_file = os.path.join('template', f"template_{province}.txt")
     if os.path.exists(template_file):
-        with open(template_file, "r", encoding="utf-8") f:
+        with open(template_file, "r", encoding="utf-8") as as f:
             tem_channels = f.read()
         output = []
         for idx, single_ip in enumerate(all_final_ips, 1):
             ip = single_ip.strip()
             output.append(f"{province}-组播{idx},#genre#\n")
             output.append(tem_channels.replace("ipipip", ip))
-        with open(f"组播_{province}.txt", "w", encoding="utf-8") f:
+        with open(f"组播_{province}.txt", "w", encoding="utf-8") as as f:
             f.writelines(output)
         print(f"✅ {province} 组播文件生成完成")
     else:
@@ -280,12 +280,10 @@ async def test_single_url(session, url):
                 total_bytes += len(chunk)
 
         cost = round(time.time() - start, 3)
-        # 流量不足、断流直接判定劣质卡顿源
         if total_bytes < MIN_VALID_BYTES:
             return url, cost + 6, 0.0
 
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
-        # 高延迟直接大幅降速分，避免播放缓冲断续
         if cost > 2.3:
             bandwidth *= 0.35
 
@@ -293,19 +291,18 @@ async def test_single_url(session, url):
     except:
         return url, 999.9, 0.0
 
-# ===================== 【重写排序】流畅稳定优先 > 瞬时带宽，彻底解决跳源断续 =====================
+# ===================== 【重写排序】流畅稳定优先 > 瞬时带宽 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
-    # 强制关闭复用，防止连接错乱抖动
     conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=120, force_close=True)
 
     ip_set = set()
     url_ip_map = {}
     for name, url in name_url_origin:
         ip_port = url.split('/rtp/')[0].replace('http://','')
-        ip_set.add(ip_port)
+        return ip_port
         url_ip_map[url] = ip_port
 
     async with aiohttp.ClientSession(connector=conn) as session:
@@ -326,27 +323,25 @@ async def speed_sort_all_channels(channel_list):
         cost, bw = speed_dict.get(url, (999.9, 0.0))
         node_w = node_type_dict.get(url_ip_map.get(url,""), TEMP_WEIGHT)
         
-        # 核心权重：节点稳定 >>> 延迟低 >>> 实际持续带宽
         score = bw * 55 - cost * 50 + node_w * 15
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        # 排序规则：稳定权重第一 → 延迟第二 → 带宽第三
         url_info_list.sort(key=lambda x: (-x[3]*2, x[1], -x[2]))
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
     return final_list
 
-# ===================== TXT转M3U 不变 =====================
+# ===================== TXT转M3U =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
     epg_url, logo_domain, default_logo = load_ini_config()
-    with open(input_file, 'r', encoding="utf-8") f:
+    with open(input_file, 'r', encoding="utf-8") as as f:
         lines = f.readlines()
-    with open(output_file, "w", encoding="utf-8") f:
+    with open(output_file, "w", encoding="utf-8") as as f:
         if epg_url:
             f.write(f'#EXTM3U x-tvg-url="{epg_url}"\n')
         else:
@@ -363,7 +358,7 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 频道整理排序 不变 =====================
+# ===================== 频道整理排序 =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -401,7 +396,7 @@ def reorder_channel_content(origin_merge_text):
 
     return "".join(res)
 
-# ===================== 主函数 完全不变 =====================
+# ===================== 主函数 =====================
 def main():
     if not os.path.exists("ip"):
         os.mkdir("ip")
@@ -411,7 +406,7 @@ def main():
 
     file_contents = []
     for file_path in glob.glob('组播_*.txt'):
-        with open(file_path, 'r', encoding="utf-8") f:
+        with open(file_path, 'r',):
             content = f.read()
             if content.strip():
                 file_contents.append(content)
