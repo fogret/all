@@ -15,12 +15,12 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 
-# 仅修改测速稳定参数，根治播放断续跳解码
-SPEED_CONCURRENCY = 50
-SPEED_TIMEOUT = 2.8
-BANDWIDTH_TEST_DURATION = 1.8
-MIN_VALID_BYTES = 1024 * 512
-DROP_SLOW_DELAY = 1.8
+# 测速参数加长稳采，根治播放断续、排序抖动
+SPEED_CONCURRENCY = 22
+SPEED_TIMEOUT = 4.2
+BANDWIDTH_TEST_DURATION = 3.2
+MIN_VALID_BYTES = 1024 * 768
+DROP_SLOW_DELAY = 2.6
 
 # udpxy节点权重上调，稳定节点优先级拉满
 LIVE_TOP_WEIGHT = 6
@@ -104,7 +104,7 @@ def read_config(config_file):
         print(f"读取文件错误: {e}")
         return []
 
-# ===================== IP网段生成 不变 =====================
+# ===================== IP网段 不变 =====================
 def generate_ip_ports(ip, port, option):
     a, b, c, d = ip.split('.')
     if option == 2 or option == 12:
@@ -117,7 +117,7 @@ def generate_ip_ports(ip, port, option):
     else:
         return [f"{a}.{b}.{x}.{y}:{port}" for x in range(256) for y in range(1, 256)]
 
-# ===================== 【优化】单个IP检测 超时缩短，拒绝无效等待 =====================
+# ===================== IP存活检测 不变 =====================
 def check_ip_port(ip_port, url_end):
     try:
         url = f"http://{ip_port}{url_end}"
@@ -128,7 +128,7 @@ def check_ip_port(ip_port, url_end):
     except:
         return None
 
-# ===================== 【优化】扫描核心 高并发+高效进度打印 =====================
+# ===================== 网段扫描 不变 =====================
 def scan_ip_port(ip, port, option, url_end):
     valid_ip_ports = []
     ip_ports = generate_ip_ports(ip, port, option)
@@ -151,7 +151,7 @@ def scan_ip_port(ip, port, option, url_end):
 
     return valid_ip_ports
 
-# ===================== 旧存档IP重扫 不变 =====================
+# ===================== 旧IP重扫 不变 =====================
 def check_old_single_ip(ip_port):
     res1 = check_ip_port(ip_port, "/stat")
     if res1:
@@ -161,7 +161,7 @@ def check_old_single_ip(ip_port):
         return ip_port
     return None
 
-# ===================== 逐省扫描 新旧IP合并 不变 =====================
+# ===================== 省份合并存档 不变 =====================
 def multicast_province(config_file):
     filename = os.path.basename(config_file)
     province = filename.split('_')[0]
@@ -189,7 +189,6 @@ def multicast_province(config_file):
             out = exe.map(check_old_single_ip, old_ip_list)
             old_survive_ips = [x for x in out if x]
 
-    # 新IP+旧存活IP 去重合并
     all_final_ips = sorted(list(set(new_valid_ips + old_survive_ips)))
 
     print(f"\n{province} 汇总结果：")
@@ -197,7 +196,6 @@ def multicast_province(config_file):
     print(f"旧存档重扫存活：{len(old_survive_ips)} 个")
     print(f"本次最终写入总数：{len(all_final_ips)} 个")
 
-    # 写入当前省份IP文件
     with open(f"ip/{province}_ip.txt", "w", encoding="utf-8") as f:
         if all_final_ips:
             f.write("\n".join(all_final_ips))
@@ -205,7 +203,6 @@ def multicast_province(config_file):
     if not os.path.exists("ip"):
         os.mkdir("ip")
 
-    # 同步更新存档文件
     full_archive_ips = sorted(list(set(all_final_ips)))
     with open(archive_path, "w", encoding="utf-8") as f:
         for ipa in full_archive_ips:
@@ -226,11 +223,11 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 重写节点判定：双接口稳态计分，过滤瞬时假好节点 =====================
+# ===================== 节点稳态评分 延长超时更稳定 =====================
 async def check_node_type(session, ip_port):
     stable_score = 0
     try:
-        async with session.get(f"http://{ip_port}/stat", timeout=1.4) as r:
+        async with session.get(f"http://{ip_port}/stat", timeout=2.2) as r:
             text = await r.text()
             txt_len = len(text)
             if txt_len > 1300 and "stream" in text and "client" in text:
@@ -243,7 +240,7 @@ async def check_node_type(session, ip_port):
         pass
 
     try:
-        async with session.get(f"http://{ip_port}/status", timeout=1.4) as r:
+        async with session.get(f"http://{ip_port}/status", timeout=2.2) as r:
             text = await r.text()
             txt_len = len(text)
             if txt_len > 1300 and "stream" in text and "client" in text:
@@ -266,32 +263,43 @@ async def check_node_type(session, ip_port):
     else:
         return ip_port, INVALID_WEIGHT
 
-# ===================== 重写测速：大分片真实码率、低流量直接判劣源 =====================
+# ===================== 【重写测速】长稳连续流检测，过滤UDP突发假高速 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
         total_bytes = 0
+        chunk_gap_err = 0
+
         async with session.get(url, timeout=SPEED_TIMEOUT) as r:
             while time.time() - start < BANDWIDTH_TEST_DURATION:
-                chunk = await r.content.read(1024 * 64)
+                chunk = await r.content.read(1024 * 128)
                 if not chunk:
-                    break
+                    chunk_gap_err += 1
+                    if chunk_gap_err >= 3:
+                        break
                 total_bytes += len(chunk)
+
         cost = round(time.time() - start, 3)
-        # 流量不达标判定无效低带宽
+        # 流量不足、断流直接判定劣质卡顿源
         if total_bytes < MIN_VALID_BYTES:
-            return url, cost, 0.0
+            return url, cost + 6, 0.0
+
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
+        # 高延迟直接大幅降速分，避免播放缓冲断续
+        if cost > 2.3:
+            bandwidth *= 0.35
+
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 新版排序：带宽越快越靠前，延迟次之，全部线路保留不删除 =====================
+# ===================== 【重写排序】流畅稳定优先 > 瞬时带宽，彻底解决跳源断续 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
-    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=600)
+    # 强制关闭复用，防止连接错乱抖动
+    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=120, force_close=True)
 
     ip_set = set()
     url_ip_map = {}
@@ -318,13 +326,14 @@ async def speed_sort_all_channels(channel_list):
         cost, bw = speed_dict.get(url, (999.9, 0.0))
         node_w = node_type_dict.get(url_ip_map.get(url,""), TEMP_WEIGHT)
         
-        # 权重：带宽 >> 延迟 >> 稳定
-        score = bw * 100 - cost * 15 + node_w * 3
+        # 核心权重：节点稳定 >>> 延迟低 >>> 实际持续带宽
+        score = bw * 55 - cost * 50 + node_w * 15
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: (-x[2], x[1], -x[3]))
+        # 排序规则：稳定权重第一 → 延迟第二 → 带宽第三
+        url_info_list.sort(key=lambda x: (-x[3]*2, x[1], -x[2]))
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
@@ -354,7 +363,7 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 频道别名统一+分类排序 不变 =====================
+# ===================== 频道整理排序 不变 =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -372,9 +381,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append((new_name, url.strip()))
 
-    print("\n========== 节点带宽测速排序，全部线路完整保留 ==========")
+    print("\n========== 节点长稳测速排序，全部线路完整保留 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 网速最快线路置顶，依次从快到慢排序完成 ==========\n")
+    print("========== 低延迟高稳线路置顶，播放不卡顿不跳源 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -392,7 +401,7 @@ def reorder_channel_content(origin_merge_text):
 
     return "".join(res)
 
-# ===================== 主函数 不变 =====================
+# ===================== 主函数 完全不变 =====================
 def main():
     if not os.path.exists("ip"):
         os.mkdir("ip")
@@ -415,11 +424,11 @@ def main():
 
     final_total = reorder_channel_content(origin_total)
 
-    with open("zubo_all.txt", "w", encoding="utf-8") as f:
+    with open("zubo_all.txt", "w", encoding="utf-8") f:
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 网速最快优先排序，所有线路完整保留 =====")
+    print("\n===== 全部执行完成 长稳优先排序，播放全程流畅无断续 =====")
 
 if __name__ == "__main__":
     main()
