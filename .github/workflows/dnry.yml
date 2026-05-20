@@ -1,75 +1,30 @@
-name: 抓取全站全部频道图标
-on:
-  workflow_dispatch:
-
+name:下载全部频道图标
+on: workflow_dispatch
 jobs:
-  getalllogo:
+  dl:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出仓库
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 配置Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.10
-
-      - name: 安装依赖
-        run: pip install requests bs4
-
-      - name: 遍历抓取全站所有图标
-        run: |
-          python3 << EOF
-import os
-import requests
-from bs4 import BeautifulSoup
-
-base_url = "https://www.xn--rgv465a.top/tvlogo/"
-save_path = "./tvlogo"
-ua = {"User-Agent":"Mozilla/5.0"}
-
-os.makedirs(save_path,exist_ok=True)
-
-def get_all_png():
-    res = requests.get(base_url,headers=ua,timeout=20)
-    soup = BeautifulSoup(res.text,"html.parser")
-    links = set()
-    for a in soup.find_all("a"):
-        href = a.get("href","")
-        if href.endswith(".png"):
-            links.add(href)
-    return sorted(list(links))
-
-def down(file_name):
-    full_url = base_url + file_name
-    local_file = os.path.join(save_path,file_name)
-    if os.path.exists(local_file):
-        print(f"已存在跳过:{file_name}")
-        return
-    try:
-        r = requests.get(full_url,headers=ua,timeout=15)
-        if r.status_code == 200:
-            with open(local_file,"wb") as f:
-                f.write(r.content)
-            print(f"成功下载:{file_name}")
-    except:
-        print(f"下载失败:{file_name}")
-
-if __name__ == "__main__":
-    print("开始扫描站点内全部图标文件...")
-    all_files = get_all_png()
-    print(f"总计扫描到 {len(all_files)} 个图标")
-    for f in all_files:
-        down(f)
-    print("所有图标全部抓取完成")
-EOF
-
-      - name: 提交推送
-        run: |
-          git config user.name bot
-          git config user.email bot@qq.com
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+      - run: pip install requests pypinyin
+      - run: |
+          python3
+          import os,requests
+          from pypinyin import lazy_pinyin
+          os.makedirs("tvlogo",exist_ok=1)
+          u="https://www.xn--rgv465a.top/tvlogo/"
+          h={"User-Agent":"Mozilla/5.0"}
+          def py(x):return ''.join(lazy_pinyin(x)).lower()+".png"
+          def d(n):
+              f=py(n)
+              if os.path.exists("tvlogo/"+f):return
+              r=requests.get(u+f,headers=h,timeout=6)
+              if r.status_code==200:open("tvlogo/"+f,"wb").write(r.content)
+          ls=open("channels.txt","r",encoding="utf-8").read().splitlines()
+          for i in ls:d(i)
+      - run: |
+          git config --global user.name a
+          git config --global user.email a@a.com
           git add tvlogo/
-          git commit -m "自动拉取站点全部频道图标" || true
+          git commit -m "更新图标"||true
           git push
