@@ -263,7 +263,7 @@ async def check_node_type(session, ip_port):
     else:
         return ip_port, INVALID_WEIGHT
 
-# ===================== 【重写测速】长稳连续流检测，过滤UDP突发假高速 =====================
+# ===================== 【重写测速】长稳连续流检测，保留原始真实带宽 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
@@ -284,14 +284,12 @@ async def test_single_url(session, url):
             return url, cost + 6, 0.0
 
         bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
-        if cost > 2.3:
-            bandwidth *= 0.35
 
         return url, cost, bandwidth
     except:
         return url, 999.9, 0.0
 
-# ===================== 【重写排序】流畅稳定优先 > 瞬时带宽 =====================
+# ===================== 【重写排序】以服务器带宽为最高优先标准 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
@@ -323,12 +321,14 @@ async def speed_sort_all_channels(channel_list):
         cost, bw = speed_dict.get(url, (999.9, 0.0))
         node_w = node_type_dict.get(url_ip_map.get(url, ""), TEMP_WEIGHT)
 
-        score = bw * 55 - cost * 50 + node_w * 15
+        # 带宽权重最高 优先排序，延迟与节点权重仅做辅助
+        score = bw * 80 - cost * 15 + node_w * 5
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: (-x[3] * 2, x[1], -x[2]))
+        # 按综合分数降序，分数相同则延迟低的靠前
+        url_info_list.sort(key=lambda x: (-x[4], x[1]))
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
@@ -376,9 +376,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append((new_name, url.strip()))
 
-    print("\n========== 节点长稳测速排序，全部线路完整保留 ==========")
+    print("\n========== 节点带宽优先排序，采用服务器真实带宽数据 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 低延迟高稳线路置顶，播放不卡顿不跳源 ==========\n")
+    print("========== 大带宽线路自动置顶，原生网速无篡改 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -423,7 +423,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 长稳优先排序，播放全程流畅无断续 =====")
+    print("\n===== 全部执行完成 带宽优先排序，采用服务器原生真实带宽 =====")
 
 
 if __name__ == "__main__":
