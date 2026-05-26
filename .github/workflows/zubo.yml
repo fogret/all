@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main   # 保证仓库永远保持活跃，避免 GitHub 自动休眠
+      - main   # 保证仓库活跃，避免 GitHub 自动暂停 schedule
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   run-script:
@@ -18,8 +18,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -31,23 +29,9 @@ jobs:
           pip install --upgrade pip
           pip install requests aiohttp
 
-      - name: Configure Git
-        run: |
-          git config --local user.name "GitHub Action"
-          git config --local user.email "action@github.com"
-
-      # 关键：避免 rebase 冲突导致 workflow 失败
-      - name: Pull latest changes (safe merge)
-        run: |
-          git pull origin main --no-rebase || true
-
       - name: Run IPTV scan script
         run: |
           python ./zubo.py
 
-      # 关键：避免空提交导致失败
-      - name: Commit and push changes
-        run: |
-          git add .
-          git diff --cached --quiet || git commit -m "自动更新IPTV源文件"
-          git push origin main
+      - name: 完成
+        run: echo "任务已执行（无文件更新）"
