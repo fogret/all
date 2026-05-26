@@ -4,12 +4,9 @@ on:
   schedule:
     - cron: "0 22 * * *"   # UTC 22:00 = 北京时间 06:00
   workflow_dispatch:
-  push:
-    branches:
-      - main   # 保证仓库活跃，避免 GitHub 自动暂停 schedule
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   run-script:
@@ -18,6 +15,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -29,9 +28,23 @@ jobs:
           pip install --upgrade pip
           pip install requests aiohttp
 
+      - name: Configure Git
+        run: |
+          git config --local user.name "GitHub Action"
+          git config --local user.email "action@github.com"
+
+      # 避免 rebase 冲突
+      - name: Pull latest changes (safe merge)
+        run: |
+          git pull origin main --no-rebase || true
+
       - name: Run IPTV scan script
         run: |
           python ./zubo.py
 
-      - name: 完成
-        run: echo "任务已执行（无文件更新）"
+      # 强制提交（无论是否有变化）
+      - name: Force commit and push
+        run: |
+          git add .
+          git commit -m "自动更新IPTV源文件（强制提交）" --allow-empty
+          git push origin main
