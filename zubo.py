@@ -223,83 +223,70 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 节点稳态评分 延长超时更稳定 =====================
+# ===================== 节点稳态评分（极致稳定版） =====================
 async def check_node_type(session, ip_port):
-    stable_score = 0
-    try:
-        async with session.get(f"http://{ip_port}/stat", timeout=2.2) as r:
-            text = await r.text()
-            txt_len = len(text)
-            if txt_len > 1300 and "stream" in text and "client" in text:
-                stable_score += 3
-            elif txt_len > 800:
-                stable_score += 2
-            elif txt_len > 400:
-                stable_score += 1
-    except:
-        pass
+    score = 0
+    for endpoint in ["/stat", "/status"]:
+        try:
+            async with session.get(f"http://{ip_port}{endpoint}", timeout=2.0) as r:
+                text = await r.text()
+                l = len(text)
+                if l > 1500:
+                    score += 3
+                elif l > 900:
+                    score += 2
+                elif l > 400:
+                    score += 1
+        except:
+            pass
 
-    try:
-        async with session.get(f"http://{ip_port}/status", timeout=2.2) as r:
-            text = await r.text()
-            txt_len = len(text)
-            if txt_len > 1300 and "stream" in text and "client" in text:
-                stable_score += 3
-            elif txt_len > 800:
-                stable_score += 2
-            elif txt_len > 400:
-                stable_score += 1
-    except:
-        pass
-
-    if stable_score >= 6:
-        return ip_port, LIVE_TOP_WEIGHT
-    elif stable_score >= 4:
-        return ip_port, LIVE_GOOD_WEIGHT
-    elif stable_score >= 2:
-        return ip_port, NORMAL_WEIGHT
-    elif stable_score >= 1:
-        return ip_port, TEMP_WEIGHT
+    if score >= 5:
+        return ip_port, 4
+    elif score >= 3:
+        return ip_port, 3
+    elif score >= 1:
+        return ip_port, 2
     else:
-        return ip_port, INVALID_WEIGHT
+        return ip_port, 1
 
-# ===================== 【重写测速】长稳连续流检测，保留原始真实带宽 =====================
+# ===================== 极致稳定版测速 =====================
 async def test_single_url(session, url):
     try:
         start = time.time()
         total_bytes = 0
-        chunk_gap_err = 0
+        chunk_gap = 0
 
-        async with session.get(url, timeout=SPEED_TIMEOUT) as r:
-            while time.time() - start < BANDWIDTH_TEST_DURATION:
-                chunk = await r.content.read(1024 * 128)
+        async with session.get(url, timeout=3.5) as r:
+            while time.time() - start < 2.8:
+                chunk = await r.content.read(32 * 1024)
                 if not chunk:
-                    chunk_gap_err += 1
-                    if chunk_gap_err >= 3:
+                    chunk_gap += 1
+                    if chunk_gap >= 3:
                         break
                 total_bytes += len(chunk)
 
         cost = round(time.time() - start, 3)
-        if total_bytes < MIN_VALID_BYTES:
-            return url, cost + 6, 0.0
 
-        bandwidth = round((total_bytes * 8) / 1024 / 1024 / BANDWIDTH_TEST_DURATION, 2)
+        if total_bytes < 300 * 1024:
+            return url, cost, 0.0
 
-        return url, cost, bandwidth
+        bw = round((total_bytes * 8) / 1024 / 1024 / 2.8, 2)
+        return url, cost, bw
+
     except:
         return url, 999.9, 0.0
 
-# ===================== 【重写排序】以服务器带宽为最高优先标准 =====================
+# ===================== 极致稳定版排序 =====================
 async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     tasks = []
     type_tasks = []
-    conn = aiohttp.TCPConnector(limit=SPEED_CONCURRENCY, ttl_dns_cache=120, force_close=True)
+    conn = aiohttp.TCPConnector(limit=20, ttl_dns_cache=120)
 
     ip_set = set()
     url_ip_map = {}
     for name, url in name_url_origin:
-        ip_port = url.split('/rtp/')[0].replace('http://', '')
+        ip_port = url.split('/rtp/')[0].replace('http://', '').strip()
         ip_set.add(ip_port)
         url_ip_map[url] = ip_port
 
@@ -314,27 +301,27 @@ async def speed_sort_all_channels(channel_list):
         speed_res = await asyncio.gather(*tasks)
 
     speed_dict = {url: (cost, bw) for url, cost, bw in speed_res}
+
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
         cost, bw = speed_dict.get(url, (999.9, 0.0))
-        node_w = node_type_dict.get(url_ip_map.get(url, ""), TEMP_WEIGHT)
+        node_w = node_type_dict.get(url_ip_map.get(url, ""), 1)
 
-        # 带宽权重最高 优先排序，延迟与节点权重仅做辅助
-        score = bw * 80 - cost * 15 + node_w * 5
+        score = node_w * 10000 + bw * 100 - cost * 5
+
         group[name].append((url, cost, bw, node_w, score))
 
     final_list = []
     for name, url_info_list in group.items():
-        # 按综合分数降序，分数相同则延迟低的靠前
-        url_info_list.sort(key=lambda x: (-x[4], x[1]))
+        url_info_list.sort(key=lambda x: -x[4])
         for u, _, _, _, _ in url_info_list:
             final_list.append((name, u))
 
     return final_list
 
-# ===================== TXT转M3U =====================
+# ===================== TXT转M3U 不变 =====================
 def txt_to_m3u(input_file, output_file):
     if not os.path.exists(input_file):
         return
@@ -358,7 +345,7 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 频道整理排序 =====================
+# ===================== 频道整理排序 不变 =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -396,7 +383,7 @@ def reorder_channel_content(origin_merge_text):
 
     return "".join(res)
 
-# ===================== 主函数 =====================
+# ===================== 主函数 不变 =====================
 def main():
     if not os.path.exists("ip"):
         os.mkdir("ip")
