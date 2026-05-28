@@ -2,7 +2,7 @@ name: zubo
 
 on:
   schedule:
-    - cron: "0 22 * * *"   # UTC 22:00 = 北京时间 06:00
+    - cron: "0 2 * * *"   # UTC 22:00 = 北京时间 06:00
   workflow_dispatch:
 
 permissions:
@@ -33,18 +33,19 @@ jobs:
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
 
-      # 避免 rebase 冲突
-      - name: Pull latest changes (safe merge)
-        run: |
-          git pull origin main --no-rebase || true
-
+      # 不再 pull，避免冲突导致 workflow 失败
       - name: Run IPTV scan script
         run: |
           python ./zubo.py
 
-      # 强制提交（无论是否有变化）
-      - name: Force commit and push
+      # 自动检测是否有变化，有变化才提交
+      - name: Commit changes if needed
         run: |
-          git add .
-          git commit -m "自动更新IPTV源文件（强制提交）" --allow-empty
-          git push origin main
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "检测到文件变化，准备提交"
+            git add .
+            git commit -m "自动更新IPTV源文件"
+            git push origin main
+          else
+            echo "没有变化，无需提交"
+          fi
