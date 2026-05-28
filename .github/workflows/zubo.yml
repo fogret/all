@@ -2,50 +2,35 @@ name: zubo
 
 on:
   schedule:
-    - cron: "0 2 * * *"   # UTC 22:00 = 北京时间 06:00
+    - cron: "0 2 * * *"   # UTC 02:00 = 北京时间 10:00
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  run-script:
+  auto-run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           pip install --upgrade pip
           pip install requests aiohttp
 
-      - name: Configure Git
-        run: |
-          git config --local user.name "GitHub Action"
-          git config --local user.email "action@github.com"
+      - name: Run script
+        run: python zubo.py
 
-      # 不再 pull，避免冲突导致 workflow 失败
-      - name: Run IPTV scan script
+      - name: Commit and push (github-actions[bot])
         run: |
-          python ./zubo.py
-
-      # 自动检测是否有变化，有变化才提交
-      - name: Commit changes if needed
-        run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "检测到文件变化，准备提交"
-            git add .
-            git commit -m "自动更新IPTV源文件"
-            git push origin main
-          else
-            echo "没有变化，无需提交"
-          fi
+          git add .
+          git commit -m "自动更新（github-actions[bot] 提交）" --allow-empty
+          git push
