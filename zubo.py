@@ -223,100 +223,61 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 节点稳态评分（极致稳定版） =====================
-async def check_node_type(session, ip_port):
-    score = 0
-    for endpoint in ["/stat", "/status"]:
-        try:
-            async with session.get(f"http://{ip_port}{endpoint}", timeout=2.0) as r:
-                text = await r.text()
-                l = len(text)
-                if l > 1500:
-                    score += 3
-                elif l > 900:
-                    score += 2
-                elif l > 400:
-                    score += 1
-        except:
-            pass
-
-    if score >= 5:
-        return ip_port, 4
-    elif score >= 3:
-        return ip_port, 3
-    elif score >= 1:
-        return ip_port, 2
-    else:
-        return ip_port, 1
-
-# ===================== 极致稳定版测速 =====================
+# ===================== 带宽测速（重写版） =====================
 async def test_single_url(session, url):
+    """
+    以带宽为唯一标准测速：
+    - 固定时间窗口读取数据
+    - 计算 Mbps
+    - 不做节点评分、不做稳定性加权
+    """
     try:
         start = time.time()
         total_bytes = 0
-        chunk_gap = 0
 
         async with session.get(url, timeout=3.5) as r:
             while time.time() - start < 2.8:
-                chunk = await r.content.read(32 * 1024)
+                chunk = await r.content.read(64 * 1024)
                 if not chunk:
-                    chunk_gap += 1
-                    if chunk_gap >= 3:
-                        break
+                    break
                 total_bytes += len(chunk)
 
-        cost = round(time.time() - start, 3)
-
-        if total_bytes < 300 * 1024:
-            return url, cost, 0.0
-
         bw = round((total_bytes * 8) / 1024 / 1024 / 2.8, 2)
-        return url, cost, bw
+        return url, bw
 
     except:
-        return url, 999.9, 0.0
+        return url, 0.0
 
-# ===================== 极致稳定版排序 =====================
+# ===================== 带宽排序（重写版） =====================
 async def speed_sort_all_channels(channel_list):
+    """
+    输入：[(name, url), ...]
+    输出：[(name, url), ...]  按带宽从大到小排序
+    """
     name_url_origin = channel_list.copy()
     tasks = []
-    type_tasks = []
+
     conn = aiohttp.TCPConnector(limit=20, ttl_dns_cache=120)
 
-    ip_set = set()
-    url_ip_map = {}
-    for name, url in name_url_origin:
-        ip_port = url.split('/rtp/')[0].replace('http://', '').strip()
-        ip_set.add(ip_port)
-        url_ip_map[url] = ip_port
-
     async with aiohttp.ClientSession(connector=conn) as session:
-        for ip in ip_set:
-            type_tasks.append(check_node_type(session, ip))
-        type_res = await asyncio.gather(*type_tasks)
-        node_type_dict = {ip: w for ip, w in type_res}
-
         for _, url in name_url_origin:
             tasks.append(test_single_url(session, url))
+
         speed_res = await asyncio.gather(*tasks)
 
-    speed_dict = {url: (cost, bw) for url, cost, bw in speed_res}
+    bw_dict = {url: bw for url, bw in speed_res}
 
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
-        cost, bw = speed_dict.get(url, (999.9, 0.0))
-        node_w = node_type_dict.get(url_ip_map.get(url, ""), 1)
-
-        score = node_w * 10000 + bw * 100 - cost * 5
-
-        group[name].append((url, cost, bw, node_w, score))
+        bw = bw_dict.get(url, 0.0)
+        group[name].append((url, bw))
 
     final_list = []
-    for name, url_info_list in group.items():
-        url_info_list.sort(key=lambda x: -x[4])
-        for u, _, _, _, _ in url_info_list:
+    for name, url_bw_list in group.items():
+        url_bw_list.sort(key=lambda x: -x[1])
+        for u, _ in url_bw_list:
             final_list.append((name, u))
 
     return final_list
