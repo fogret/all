@@ -15,7 +15,7 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 
-# 测速参数（新版：删除带宽，改为响应速度 + 成功优先）
+# ===================== 新测速参数（删除带宽，改为响应速度 + 成功优先） =====================
 MAX_SPEED_CONCURRENCY = 22       # 单批最大并发
 SPEED_BATCH_SIZE = 180           # 每批测速数量
 SINGLE_TEST_TIMEOUT = 3.5        # 单路超时
@@ -223,11 +223,13 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 新测速：删除带宽，改为响应速度 + 成功优先 =====================
+# ===================== 新测速：删除带宽，改为响应速度 + 成功优先（含日志） =====================
 async def test_single_url(session, url):
     start = time.time()
     first_byte_time = None
     ok = False
+
+    print(f"[测速开始] {url}")
 
     try:
         async with session.get(url, timeout=SINGLE_TEST_TIMEOUT) as r:
@@ -236,21 +238,24 @@ async def test_single_url(session, url):
                 if chunk:
                     if first_byte_time is None:
                         first_byte_time = time.time() - start
+                        print(f"[首包时间] {url} → {first_byte_time:.3f}s")
                     ok = True
                     break
                 else:
                     break
-    except:
-        pass
+    except Exception as e:
+        print(f"[测速异常] {url} → {e}")
 
     if not ok:
         score = 9999.0
+        print(f"[测速失败] {url} → score={score}")
     else:
         score = first_byte_time if first_byte_time is not None else 5.0
+        print(f"[测速成功] {url} → score={score:.3f}")
 
     return url, score
 
-# ===================== 新排序：分片 + 并发 + 响应速度优先 =====================
+# ===================== 新排序：分片 + 并发 + 响应速度优先（含日志） =====================
 async def speed_sort_all_channels(channel_list):
 
     def chunk_list(lst, size):
@@ -260,10 +265,18 @@ async def speed_sort_all_channels(channel_list):
     name_url_origin = channel_list.copy()
     score_dict = {}
 
+    total = len(name_url_origin)
+    print(f"\n===== 开始测速，共 {total} 条频道 =====")
+
     conn = aiohttp.TCPConnector(limit=MAX_SPEED_CONCURRENCY, ttl_dns_cache=120)
 
     async with aiohttp.ClientSession(connector=conn) as session:
+        batch_index = 0
+
         for batch in chunk_list(name_url_origin, SPEED_BATCH_SIZE):
+            batch_index += 1
+            print(f"\n--- 第 {batch_index} 批测速（{len(batch)} 条） ---")
+
             sem = asyncio.Semaphore(MAX_SPEED_CONCURRENCY)
             tasks = []
 
@@ -275,8 +288,13 @@ async def speed_sort_all_channels(channel_list):
                 tasks.append(wrapped(url))
 
             batch_res = await asyncio.gather(*tasks)
+
             for url, score in batch_res:
                 score_dict[url] = score
+
+            print(f"[批次完成] 第 {batch_index} 批测速结束")
+
+    print("\n===== 全部测速完成，开始排序 =====")
 
     group = {}
     for name, url in name_url_origin:
@@ -288,8 +306,9 @@ async def speed_sort_all_channels(channel_list):
     final_list = []
     for name, url_score_list in group.items():
         url_score_list.sort(key=lambda x: x[1])
-        for u, _ in url_score_list:
-            final_list.append((name, u))
+        final_list.extend([(name, u) for u, _ in url_score_list])
+
+    print("===== 排序完成：响应速度优先 =====\n")
 
     return final_list
 
