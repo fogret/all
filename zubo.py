@@ -223,50 +223,89 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 新测速：删除带宽，改为响应速度 + 成功优先（含日志） =====================
+# ===================== 解码识别 =====================
+def detect_codec_from_headers(headers, first_bytes):
+    h = str(headers).lower()
+
+    if "h264" in h or "avc" in h:
+        return "H264"
+    if "h265" in h or "hevc" in h:
+        return "H265"
+    if "mpeg2" in h:
+        return "MPEG2"
+    if "av1" in h:
+        return "AV1"
+    if "vp9" in h:
+        return "VP9"
+
+    fb = first_bytes.lower()
+    if b"avc" in fb:
+        return "H264"
+    if b"hevc" in fb:
+        return "H265"
+    if b"av01" in fb:
+        return "AV1"
+    if b"vp09" in fb:
+        return "VP9"
+
+    return "OTHER"
+
+# ===================== 新测速：响应速度 + 解码识别（精简日志） =====================
 async def test_single_url(session, url):
     start = time.time()
     first_byte_time = None
     ok = False
-
-    print(f"[测速开始] {url}")
+    codec = "OTHER"
+    first_bytes = b""
 
     try:
         async with session.get(url, timeout=SINGLE_TEST_TIMEOUT) as r:
+            headers = r.headers
+
             while time.time() - start < SINGLE_READ_DURATION:
                 chunk = await r.content.read(SINGLE_READ_CHUNK)
                 if chunk:
+                    if not first_bytes:
+                        first_bytes = chunk[:4096]
+                        codec = detect_codec_from_headers(headers, first_bytes)
                     if first_byte_time is None:
                         first_byte_time = time.time() - start
-                        print(f"[首包时间] {url} → {first_byte_time:.3f}s")
                     ok = True
                     break
                 else:
                     break
-    except Exception as e:
-        print(f"[测速异常] {url} → {e}")
+    except:
+        pass
 
     if not ok:
         score = 9999.0
-        print(f"[测速失败] {url} → score={score}")
     else:
         score = first_byte_time if first_byte_time is not None else 5.0
-        print(f"[测速成功] {url} → score={score:.3f}")
 
-    return url, score
+    return url, score, codec
 
-# ===================== 新排序：分片 + 并发 + 响应速度优先（含日志） =====================
+# ===================== 新排序：分片 + 并发 + H264优先 + 频道测速显示 =====================
 async def speed_sort_all_channels(channel_list):
 
     def chunk_list(lst, size):
         for i in range(0, len(lst), size):
             yield lst[i:i + size]
 
+    codec_priority = {
+        "H264": 1,
+        "H265": 2,
+        "MPEG2": 3,
+        "AV1": 4,
+        "VP9": 5,
+        "OTHER": 9
+    }
+
     name_url_origin = channel_list.copy()
     score_dict = {}
+    codec_dict = {}
 
     total = len(name_url_origin)
-    print(f"\n===== 开始测速，共 {total} 条频道 =====")
+    print(f"\n===== 开始频道测速，共 {total} 条 =====")
 
     conn = aiohttp.TCPConnector(limit=MAX_SPEED_CONCURRENCY, ttl_dns_cache=120)
 
@@ -289,26 +328,32 @@ async def speed_sort_all_channels(channel_list):
 
             batch_res = await asyncio.gather(*tasks)
 
-            for url, score in batch_res:
+            for url, score, codec in batch_res:
                 score_dict[url] = score
+                codec_dict[url] = codec
 
             print(f"[批次完成] 第 {batch_index} 批测速结束")
 
-    print("\n===== 全部测速完成，开始排序 =====")
+    print("\n===== 频道测速结果汇总 =====")
 
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
         score = score_dict.get(url, 9999.0)
-        group[name].append((url, score))
+        codec = codec_dict.get(url, "OTHER")
+        group[name].append((url, score, codec))
 
     final_list = []
-    for name, url_score_list in group.items():
-        url_score_list.sort(key=lambda x: x[1])
-        final_list.extend([(name, u) for u, _ in url_score_list])
+    for name, url_score_codec_list in group.items():
+        url_score_codec_list.sort(
+            key=lambda x: (codec_priority.get(x[2], 9), x[1])
+        )
+        for u, s, c in url_score_codec_list:
+            print(f"[频道测速] {name} | 编码: {c} | 分数: {s:.3f}")
+            final_list.append((name, u))
 
-    print("===== 排序完成：响应速度优先 =====\n")
+    print("===== 排序完成：H264 优先 + 响应速度优先 =====\n")
 
     return final_list
 
@@ -354,9 +399,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append((new_name, url.strip()))
 
-    print("\n========== 节点测速排序：成功优先 + 响应速度优先 ==========")
+    print("\n========== 节点测速排序：H264 优先 + 响应速度优先 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 稳定且响应快的线路自动置顶 ==========\n")
+    print("========== 稳定且解码友好的线路自动置顶 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -401,7 +446,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成：响应速度优先排序 =====")
+    print("\n===== 全部执行完成：H264 优先 + 响应速度优先排序 =====")
 
 
 if __name__ == "__main__":
