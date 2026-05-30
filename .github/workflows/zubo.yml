@@ -1,42 +1,44 @@
-name: zubo
+name: 'ZUBO Auto Update'
 
 on:
+  workflow_dispatch:
+
+  # ★ 每天北京时间 10:00 自动执行
   schedule:
     - cron: "0 2 * * *"   # UTC 02:00 = 北京时间 10:00
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  auto-run:
+  run-zubo:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install requests aiohttp
+          pip install requests aiohttp configparser
 
-      # ★★★ 必须加入：修复 Author identity unknown
-      - name: Set Git identity
+      - name: Run zubo.py
+        run: python zubo.py
+
+      - name: Commit and push all generated files
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-
-      - name: Run script
-        run: python zubo.py
-
-      - name: Commit and push (github-actions[bot])
-        run: |
-          git add .
-          git commit -m "自动更新（github-actions[bot] 提交）" || echo "No changes to commit"
-          git push
+          git add -A
+          if ! git diff --staged --quiet; then
+            git commit -m "ZUBO 自动更新（北京时间 10:00 定时任务）"
+            git push
+          else
+            echo "No changes to commit"
+          fi
