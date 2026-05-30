@@ -15,21 +15,21 @@ ALIAS_FILE = "alias.txt"
 DEMO_FILE = "demo.txt"
 CONFIG_INI = "config.ini"
 
-# 测速参数加长稳采，根治播放断续、排序抖动
-SPEED_CONCURRENCY = 22
-SPEED_TIMEOUT = 4.2
-BANDWIDTH_TEST_DURATION = 3.2
-MIN_VALID_BYTES = 1024 * 768
-DROP_SLOW_DELAY = 2.6
+# 测速参数（新版：删除带宽，改为响应速度 + 成功优先）
+MAX_SPEED_CONCURRENCY = 22       # 单批最大并发
+SPEED_BATCH_SIZE = 180           # 每批测速数量
+SINGLE_TEST_TIMEOUT = 3.5        # 单路超时
+SINGLE_READ_DURATION = 2.0       # 最长读取时间
+SINGLE_READ_CHUNK = 64 * 1024    # 读取块大小
 
-# udpxy节点权重上调，稳定节点优先级拉满
+# udpxy节点权重（保留）
 LIVE_TOP_WEIGHT = 6
 LIVE_GOOD_WEIGHT = 4
 NORMAL_WEIGHT = 2
 TEMP_WEIGHT = 1
 INVALID_WEIGHT = 0
 
-# 【扫描提速关键参数】完全原样未改动
+# 扫描参数（保留）
 IP_CHECK_TIMEOUT = 1.0
 SINGLE_SCAN_TIMEOUT = 180
 SCAN_WORKER_ODD = 380
@@ -223,61 +223,72 @@ def multicast_province(config_file):
     else:
         print(f"❌ 未找到 template_{province}.txt")
 
-# ===================== 带宽测速（重写版） =====================
+# ===================== 新测速：删除带宽，改为响应速度 + 成功优先 =====================
 async def test_single_url(session, url):
-    """
-    以带宽为唯一标准测速：
-    - 固定时间窗口读取数据
-    - 计算 Mbps
-    - 不做节点评分、不做稳定性加权
-    """
+    start = time.time()
+    first_byte_time = None
+    ok = False
+
     try:
-        start = time.time()
-        total_bytes = 0
-
-        async with session.get(url, timeout=3.5) as r:
-            while time.time() - start < 2.8:
-                chunk = await r.content.read(64 * 1024)
-                if not chunk:
+        async with session.get(url, timeout=SINGLE_TEST_TIMEOUT) as r:
+            while time.time() - start < SINGLE_READ_DURATION:
+                chunk = await r.content.read(SINGLE_READ_CHUNK)
+                if chunk:
+                    if first_byte_time is None:
+                        first_byte_time = time.time() - start
+                    ok = True
                     break
-                total_bytes += len(chunk)
-
-        bw = round((total_bytes * 8) / 1024 / 1024 / 2.8, 2)
-        return url, bw
-
+                else:
+                    break
     except:
-        return url, 0.0
+        pass
 
-# ===================== 带宽排序（重写版） =====================
+    if not ok:
+        score = 9999.0
+    else:
+        score = first_byte_time if first_byte_time is not None else 5.0
+
+    return url, score
+
+# ===================== 新排序：分片 + 并发 + 响应速度优先 =====================
 async def speed_sort_all_channels(channel_list):
-    """
-    输入：[(name, url), ...]
-    输出：[(name, url), ...]  按带宽从大到小排序
-    """
-    name_url_origin = channel_list.copy()
-    tasks = []
 
-    conn = aiohttp.TCPConnector(limit=20, ttl_dns_cache=120)
+    def chunk_list(lst, size):
+        for i in range(0, len(lst), size):
+            yield lst[i:i + size]
+
+    name_url_origin = channel_list.copy()
+    score_dict = {}
+
+    conn = aiohttp.TCPConnector(limit=MAX_SPEED_CONCURRENCY, ttl_dns_cache=120)
 
     async with aiohttp.ClientSession(connector=conn) as session:
-        for _, url in name_url_origin:
-            tasks.append(test_single_url(session, url))
+        for batch in chunk_list(name_url_origin, SPEED_BATCH_SIZE):
+            sem = asyncio.Semaphore(MAX_SPEED_CONCURRENCY)
+            tasks = []
 
-        speed_res = await asyncio.gather(*tasks)
+            async def wrapped(url):
+                async with sem:
+                    return await test_single_url(session, url)
 
-    bw_dict = {url: bw for url, bw in speed_res}
+            for _, url in batch:
+                tasks.append(wrapped(url))
+
+            batch_res = await asyncio.gather(*tasks)
+            for url, score in batch_res:
+                score_dict[url] = score
 
     group = {}
     for name, url in name_url_origin:
         if name not in group:
             group[name] = []
-        bw = bw_dict.get(url, 0.0)
-        group[name].append((url, bw))
+        score = score_dict.get(url, 9999.0)
+        group[name].append((url, score))
 
     final_list = []
-    for name, url_bw_list in group.items():
-        url_bw_list.sort(key=lambda x: -x[1])
-        for u, _ in url_bw_list:
+    for name, url_score_list in group.items():
+        url_score_list.sort(key=lambda x: x[1])
+        for u, _ in url_score_list:
             final_list.append((name, u))
 
     return final_list
@@ -306,7 +317,7 @@ def txt_to_m3u(input_file, output_file):
                     f.write(f'#EXTINF:-1 tvg-id="{channel_name}" tvg-name="{channel_name}" tvg-logo="{logo_url}" group-title="{genre}",{channel_name}\n')
                     f.write(f'{channel_url}\n')
 
-# ===================== 频道整理排序 不变 =====================
+# ===================== 频道整理排序（调用新测速） =====================
 def reorder_channel_content(origin_merge_text):
     alias_map = load_alias_map()
     cate_order, cate_chan_dict = load_demo_order()
@@ -324,9 +335,9 @@ def reorder_channel_content(origin_merge_text):
             new_name = alias_map.get(name.strip(), name.strip())
             all_channel_data.append((new_name, url.strip()))
 
-    print("\n========== 节点带宽优先排序，采用服务器真实带宽数据 ==========")
+    print("\n========== 节点测速排序：成功优先 + 响应速度优先 ==========")
     all_channel_data = asyncio.run(speed_sort_all_channels(all_channel_data))
-    print("========== 大带宽线路自动置顶，原生网速无篡改 ==========\n")
+    print("========== 稳定且响应快的线路自动置顶 ==========\n")
 
     res = []
     now = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=8)
@@ -371,7 +382,7 @@ def main():
         f.write(final_total)
 
     txt_to_m3u("zubo_all.txt", "zubo_all.m3u")
-    print("\n===== 全部执行完成 带宽优先排序，采用服务器原生真实带宽 =====")
+    print("\n===== 全部执行完成：响应速度优先排序 =====")
 
 
 if __name__ == "__main__":
